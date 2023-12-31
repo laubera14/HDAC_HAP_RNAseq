@@ -1,0 +1,174 @@
+---
+title: 'HAP FFG RNA-seq: HDAC1 Heatmaps KO rel. ctrl and dynamic deregulation after
+  introduction of TGs rel. KO update to transcriptome hg38_e100'
+author: "Adrian Arnel Lauber"
+date: "25.03.2021"
+output:
+  html_document: 
+    theme: cerulean
+    highlight: monochrome
+    toc: yes
+    toc_float: yes
+  word_document:
+    toc: yes
+  pdf_document: 
+    toc: yes
+  html_notebook: 
+    toc: yes
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      include = TRUE,
+                      warning=FALSE,
+                      message=TRUE,
+                      fig.align = 'center')
+```
+
+# Background & Summary
+Genes are sorted into 3 Groups: i) Reintroduction of wt HDAC1 rescues the KO deregulation of the gene, the catalytically inactive HDAC1 (Mut) does the same. ii) Rescue through wt HDAC1, but ci HDAC1 has no effect on gene regulation. iii) The wt HDAC1 rescues gene regulation, but opposite to the wt HDAC1, the ci HDAC1 leads to higher deregulation (dominant negative effect). This group contains also lists, which show all genes that are deregulated by introdcution of the ci HDAC1, independet of the deregulation in the KO.
+
+## Performed steps for DEseq2
+* Load R libraries:
+
+```{r imports, message=FALSE}
+library("tidyverse")
+library("DESeq2")
+library("writexl")
+library("knitr")
+```
+
+```{r parallelization}
+platform <- Sys.info()["sysname"]
+
+if (platform == "Linux") {
+  library("BiocParallel")
+  register(MulticoreParam(2))
+}
+```
+
+
+* Read raw count matrix and coldata
+  + Raw count matrix is provided by Michael Schuster of CEMM. 
+  + nome: Homo sapiens genome assembly hg38 (December 2013)
+  + Transcriptome: Homo sapiens transcriptome hg38_e100 (April 2020)
+  + STAR aligner was used for mapping of reads.
+  + The same RAW count numbers which where used in Schuster´s DEseq analysis are being read in here
+  + Coldata: Additional information about each sample. they are stored in the Metadata slot of the DEseq object
+
+```{r countmatrix}
+cts_full <- read_tsv("rnaseq_deseq_global_counts_raw.tsv")
+cts <- cts_full %>% select(gene_id, contains(c("HAP_141", "HAP_1_", "HAP_2_", "HAP_3_",  "HD1_141"))) %>% column_to_rownames("gene_id")
+cts_matrix <- as.matrix(cts)
+
+coldata <- read.csv("rnaseq_deseq_inhibitor_samples.tsv", sep="\t", row.names=12, colClasses=c("NULL","NULL", "NULL", NA, NA, "NULL", NA, NA, NA, NA, "NULL", NA, "NULL", NA), stringsAsFactors = TRUE)
+
+
+featureData <- cts_full %>% select(gene_version:location)
+
+```
+
+* Difference between sample metadata and count matrix samples?
+  + The sample data table has to contain exactly the same samples in the same order as the count matrix table, where we chose already the samples of interest. If there is a difference, drop the following unused sample data.
+```{r difference, echo=TRUE}
+ctsc <- colnames(cts_matrix)
+coldatac <- rownames(coldata)
+setdiff(coldatac, ctsc)
+
+coldata <- coldata[!(row.names(coldata) %in% setdiff(rownames(coldata),ctsc)), ]
+```
+
+* Do the sample data table and the count matrix now contain the same samples in the same order?
+```{r sample_check, echo=TRUE}
+(all(rownames(coldata) == colnames(cts)))
+```
+
+* Levels of Factors should of course also be adjusted to our "sub-matrix"
+
+```{r correct_factors}
+coldata$genotype <- factor(coldata$genotype, levels = c("wt", "HDAC1ko"))
+coldata$expression <- factor(coldata$expression, levels = c("native", "aHDAC1", "iHDAC1"))
+coldata$group <- factor(coldata$group, levels = c("wt_native","wt_inactive_HDAC1",  "HDAC1ko_inactive", "HDAC1ko_active"))
+```
+
+```{r modelMatrix}
+design <- as.formula(~ batch * group)
+modelMatrix <- model.matrix(design, data = coldata)
+modelMatrix
+```
+
+* Create dds object + add metadata
+
+```{r dds_object_initialization}
+dds <- DESeqDataSetFromMatrix(countData = cts_matrix,
+                              colData = coldata,
+                              design = ~ batch * group)
+
+mcols(dds) <- DataFrame(mcols(dds), featureData)
+```
+
+* relevel factors to set the reference
+
+```{r relevel_group_factor}
+dds$group <- factor(dds$group, levels = c("wt_native", "HDAC1ko_active", "HDAC1ko_inactive", "HDAC1ko_native"))
+```
+
+* Pre-filter the low raw count rows
+  + Here we can define the threshold for the sum of raw counts per row, so that rows (=genes) with a generally low count can be dropped. This threshold can also depend on the number of samples!
+
+```{r cutoff, echo=TRUE}
+keep <- rowSums(counts(dds)) > 1
+dds <- dds[keep,]
+```
+
+* Deseq with WALD
+
+```{r deseq}
+if (platform == "Linux") {
+  dds <- DESeq(dds, parallel=TRUE)
+} else {
+  dds <- DESeq(dds)
+}
+
+KO_vs_ctrl_all <- results(dds)
+```
+
+* Quality control
+```{r quality_check}
+summary(KO_vs_ctrl_all)
+options(scipen = 5)
+
+plotMA(KO_vs_ctrl_all, ylim = c(-10,10), main = "group HDAC1 KO vs wt native \n rowsum > 1")
+
+
+```
+
+```{r quality_check_2}
+
+resLFC <- lfcShrink(dds, coef="group_HDAC1ko_native_vs_wt_native", type="normal")
+plotMA(resLFC, ylim=c(-5,5), main = "group HDAC1 KO vs wt native \n rowsum > 1")
+options(scipen = 0)
+
+```
+
+```{r identify_genes_quality_check, eval=FALSE, include=FALSE}
+idx <- identify(KO_vs_ctrl_all$baseMean, KO_vs_ctrl_all$log2FoldChange)
+rownames(KO_vs_ctrl_all)[idx]
+```
+
+## Adding gene names and chose significant genes for Heatmaps 
+For this task additional result tables are being generated. So I can chose the genes which fulfill the conditions.
+
+* add gene names to main gene set with log2foldChanges of KO relative to ctrl
+```{r main_set_names}
+KO_vs_ctrl_all$gene_name <- mcols(dds)$gene_name
+```
+
+
+
+# R status
+```{r}
+sessionInfo()
+```

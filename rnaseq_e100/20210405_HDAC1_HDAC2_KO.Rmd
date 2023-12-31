@@ -1,0 +1,786 @@
+---
+title: 'HAP FFG RNA-seq: HDAC1 & HDAC2 comparison of deregulation after
+  introduction of TGs rel. to KO (updated to hg38_e100)'
+author: "Adrian Arnel Lauber"
+date: "05.04.2021"
+output:
+  html_document: 
+    theme: cerulean
+    highlight: monochrome
+    toc: yes
+    toc_float: yes
+  word_document:
+    toc: yes
+  pdf_document: 
+    toc: yes
+  html_notebook: 
+    toc: yes
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      include = TRUE,
+                      warning=FALSE,
+                      message=TRUE,
+                      fig.align = 'center')
+```
+
+# Background & Summary
+Genes are sorted into 3 Groups: i) Reintroduction of wt HDAC1 rescues the KO deregulation of the gene, the catalytically inactive HDAC1 (Mut) does the same. ii) Rescue through wt HDAC1, but ci HDAC1 has no effect on gene regulation. iii) The wt HDAC1 rescues gene regulation, opposite to this, the ci HDAC1 leads to higher deregulation (dominant negative effect).
+
+## Load libraries
+
+```{r imports, message=FALSE}
+library("tidyverse")
+library("DESeq2")
+library("pheatmap")
+library("writexl")
+library("knitr")
+```
+
+```{r parallelization}
+platform <- Sys.info()["sysname"]
+
+if (platform == "Linux") {
+  library("BiocParallel")
+  register(MulticoreParam(2))
+}
+```
+
+## Read raw count matrix and coldata + extract metadata
+
+```{r countmatrix}
+cts_full <- read_tsv("rnaseq_deseq_global_counts_raw.tsv")
+cts <- cts_full %>% select(gene_id, contains(c("HAP_1_", "HAP_2_", "HAP_3_", "HD1", "HD2"))) %>% column_to_rownames("gene_id")
+cts_matrix <- as.matrix(cts)
+
+coldata <- read.csv("rnaseq_deseq_inhibitor_samples.tsv", sep="\t", row.names=12, colClasses=c("NULL","NULL", "NULL", NA, NA, "NULL", NA, NA, NA, NA, "NULL", NA, "NULL", NA), stringsAsFactors = TRUE)
+
+
+featureData <- cts_full %>% select(gene_version:location)
+
+```
+
+## Difference between sample data and count matrix samples?
+The sample data table has to contain exactly the same samples in the same order as the count matrix table, where we chose already the samples of interest. If there is a difference, drop the unused sample data.
+```{r difference}
+ctsc <- colnames(cts_matrix)
+coldatac <- rownames(coldata)
+setdiff(coldatac, ctsc)
+
+coldata <- coldata[!(row.names(coldata) %in% setdiff(rownames(coldata),ctsc)), ]
+```
+
+Do the sample data table and the count matrix now contain the same samples in the same order?
+```{r sample_check}
+(all(rownames(coldata) == colnames(cts)))
+```
+
+## Levels of Factors should of course also be adjusted to our smaller matrix
+
+```{r correct_factors}
+coldata$genotype <- factor(coldata$genotype, levels = c("wt", "HDAC1ko", "HDAC2ko"))
+coldata$expression <- factor(coldata$expression, levels = c("native", "aHDAC1", "iHDAC1", "aHDAC2", "iHDAC2"))
+coldata$group <- factor(coldata$group, levels = c("wt_native", "HDAC1ko_native", "HDAC1ko_inactive", "HDAC1ko_active", "HDAC2ko_native", "HDAC2ko_inactive", "HDAC2ko_active"))
+```
+
+## Create dds object + add metadata
+
+```{r dds_object_initialization}
+dds <- DESeqDataSetFromMatrix(countData = cts_matrix,
+                              colData = coldata,
+                              design = ~ group)
+
+mcols(dds) <- DataFrame(mcols(dds), featureData)
+```
+
+## relevel factors to set the reference
+
+```{r relevel_group_factor}
+dds$group <- factor(dds$group, levels = c("wt_native", "HDAC1ko_active", "HDAC1ko_inactive", "HDAC1ko_native", "HDAC2ko_active", "HDAC2ko_inactive", "HDAC2ko_native"))
+```
+
+## Pre-filter the low raw count rows
+Here we can define the threshold for the sum of raw counts per row, so that rows (=genes) with a generally low count can be dropped. This threshold can also depend on the number of samples!
+
+```{r cutoff}
+keep <- rowSums(counts(dds)) > 1
+dds <- dds[keep,]
+```
+
+## Deseq with LRT
+
+```{r deseq_lrt}
+if (platform == "Linux") {
+  dds <- DESeq(dds, test="LRT", reduced=~1, parallel=TRUE)
+} else {
+  dds <- DESeq(dds, test="LRT", reduced=~1)
+}
+
+res <- results(dds)
+```
+
+## Adding gene names/Types and chose significant genes for Heatmaps
+For this additional result tables are being generated. So I can chose the genes which fulfill the conditions.
+
+add gene names to main gene set with log2foldChanges of KO relative to ctrl
+```{r main_set_names}
+res$gene_name <- mcols(dds)$gene_name
+res$gene_biotype <- mcols(dds)$gene_biotype
+```
+
+Choose significant genes from main gene set and subset into upregulated and downregulated genes
+```{r significants}
+res_sig <- subset(res, padj < 0.1)
+res_up <- subset(res, log2FoldChange > 1 & padj < 0.1)
+res_up <- res_up[order(res_up$log2FoldChange, decreasing = TRUE),]
+res_down <- subset(res, log2FoldChange < -1 & padj < 0.1)
+res_down <- res_down[order(res_down$log2FoldChange, decreasing = FALSE),]
+res_unch <- subset(res, log2FoldChange > -1 & log2FoldChange < 1 & padj < 0.1)
+res_unch <- res_unch[order(res_up$log2FoldChange, decreasing = TRUE),]
+```
+
+## wt reintroduction in KO, if genes are upregulated in KO
+Sort the genes which are upregulated by reintroduction of wt HDAC2 into a downregulated set and an upregulated set. therefore the log2foldChanges have to be read by extracting the corresponding contrast from the dds object. Gene names have to be added first to the results table, before it is made smaller.
+```{r active_reintro_KO_up}
+res_active <- results(dds, contrast = c("group", "HDAC2ko_active", "HDAC2ko_native"))
+res_active$gene_name <- mcols(dds)$gene_name
+res_active$gene_biotype <- mcols(dds)$gene_biotype
+
+res_active_up <- subset(res_active, log2FoldChange > 1 & padj < 0.1)
+res_KO_up_active_up <- 
+  res_up[!(rownames(res_up) %in% setdiff(rownames(res_up),rownames(res_active_up))), ]
+
+res_active_down <- subset(res_active, log2FoldChange < -1 & padj < 0.1)
+res_KO_up_active_down <- 
+  res_up[!(rownames(res_up) %in% setdiff(rownames(res_up),rownames(res_active_down))), ]
+```
+
+## wt reintroduction in KO, if genes are downregulated in KO
+Same as above, but this time for the genes which are downregulated in KO. The gene sets, which describe the upregulated or downregulated genes upon wt HDAC2 reintroduction were defined in the previous section.
+```{r active_reintro_KO_down}
+res_KO_down_active_up <- 
+  res_down[!(rownames(res_down) %in% setdiff(rownames(res_down),rownames(res_active_up))), ]
+
+res_KO_down_active_down <- 
+  res_down[!(rownames(res_down) %in% setdiff(rownames(res_down),rownames(res_active_down))), ]
+```
+
+
+## wt reintroduction in KO, if genes are unchanged in KO
+This if for the genes which are not affected by the KO, but are regulated by the reintroduction of the wt HDAC2
+```{r active_reintro_KO_unch}
+res_KO_unch_active_up <- 
+  res_unch[!(rownames(res_unch) %in% setdiff(rownames(res_unch),rownames(res_active_up))), ]
+
+res_KO_unch_active_down <- 
+  res_unch[!(rownames(res_unch) %in% setdiff(rownames(res_unch),rownames(res_active_down))), ]
+```
+
+
+## Reintroduction of the catalytically inactive HDAC2 Mutant
+Since the genes from the KO and the wt reintroduction are chosen now, we can group and select the genes we want to display from the ci gene set. therefore, we need to first know the log2foldChanges from this genes relative to the KO. Contrast is extracted again.
+```{r inactive_reintro}
+res_ci <- results(dds, contrast = c("group", "HDAC2ko_inactive", "HDAC2ko_native"))
+res_ci$gene_name <- mcols(dds)$gene_name
+res_ci$gene_biotype <- mcols(dds)$gene_biotype
+```
+
+Now, the grouping can be started:
+
+i) When both active and inactive HDAC2 do the same.
+```{r i_same}
+res_ci_down <- subset(res_ci, log2FoldChange < -1 & padj < 0.1)
+res_KO_up_active_down_ci_down <- res_KO_up_active_down[!(rownames(res_KO_up_active_down) %in%
+                               setdiff(rownames(res_KO_up_active_down),rownames(res_ci_down))), ]
+
+res_ci_up <- subset(res_ci, log2FoldChange > 1 & padj < 0.1)
+res_KO_down_active_up_ci_up <- res_KO_down_active_up[!(rownames(res_KO_down_active_up) %in%
+                               setdiff(rownames(res_KO_down_active_up),rownames(res_ci_up))), ]
+```
+
+ii) When the catalytically inactive HDAC2 doesn't affect gene regulation
+```{r ii_no_change}
+res_ci_unch <- subset(res_ci, log2FoldChange > -1 & log2FoldChange < 1 & padj < 0.1)
+res_KO_up_active_down_ci_unch <- res_KO_up_active_down[!(rownames(res_KO_up_active_down) %in%
+                               setdiff(rownames(res_KO_up_active_down),rownames(res_ci_unch))), ]
+
+res_KO_down_active_up_ci_unch <- res_KO_down_active_up[!(rownames(res_KO_down_active_up) %in%
+                               setdiff(rownames(res_KO_down_active_up),rownames(res_ci_unch))), ]
+```
+
+iii) dominant negative effect upon reintroduction of the catalytically inactive HDAC2
+```{r iii_negative_dominant}
+res_ci_up <- subset(res_ci, log2FoldChange > 1 & padj < 0.1)
+res_KO_up_active_down_ci_up <- res_KO_up_active_down[!(rownames(res_KO_up_active_down) %in%
+                               setdiff(rownames(res_KO_up_active_down),rownames(res_ci_up))), ]
+
+res_ci_down <- subset(res_ci, log2FoldChange < -1 & padj < 0.1)
+res_KO_down_active_up_ci_down <- res_KO_down_active_up[!(rownames(res_KO_down_active_up) %in%
+                               setdiff(rownames(res_KO_down_active_up),rownames(res_ci_down))), ]
+```
+
+
+iv) What if HDAC2 KO doesn't affect the gene, but introduction of the catalytically inactive HDAC2 causes deregulation?
+
+```{r iv_change_only_upon_ci_intro}
+res_KO_unch_ci_up <- res_unch[!(rownames(res_unch) %in% setdiff(rownames(res_unch),rownames(res_ci_up))), ]
+
+res_KO_unch_ci_down <- res_unch[!(rownames(res_unch) %in%
+                                    setdiff(rownames(res_unch),rownames(res_ci_down))), ]
+```
+
+
+## export result tables
+
+```{r export_result_tables_and_summary_lists}
+resOrdered <- res[order(res$pvalue),]
+write_xlsx(rownames_to_column(as.data.frame(res), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_active), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/grouped_HDAC2KO_HDAC2wt_vs_HDAC2KO.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_ci), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/grouped_HDAC2KO_HDAC2Mut_vs_HDAC2KO.xlsx")
+
+
+write_xlsx(rownames_to_column(as.data.frame(res_sig), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/sublist_KO_significant_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_up), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_up/sublist_KO_up_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_down), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_down/sublist_KO_down_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_unch), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/sublist_KO_unch_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_KO_up_active_up), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_up/upregulated_by_wt/sublist_KO_up_active_up_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_KO_up_active_down), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_up/downregulated_by_wt/sublist_KO_up_active_down_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_KO_up_active_down_ci_up), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_up/downregulated_by_wt/sublist_KO_up_active_down_ci_up_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_KO_up_active_down_ci_unch), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_up/downregulated_by_wt/sublist_KO_up_active_down_ci_unch_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_KO_up_active_down_ci_down), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_up/downregulated_by_wt/sublist_KO_up_active_down_ci_down_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_KO_down_active_up), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_down/upregulated_by_wt/sublist_KO_down_active_up_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_KO_down_active_down), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_down/downregulated_by_wt/sublist_KO_down_active_down_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_KO_down_active_up_ci_up), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_down/upregulated_by_wt/sublist_KO_down_active_up_ci_up_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_KO_down_active_up_ci_unch), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_down/upregulated_by_wt/sublist_KO_down_active_up_ci_unch_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_KO_down_active_up_ci_down), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_down/upregulated_by_wt/sublist_KO_down_active_up_ci_down_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_KO_unch_active_up), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_unch/upregulated_by_wt/sublist_KO_unch_active_up_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_KO_unch_active_down), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_unch/downregulated_by_wt/sublist_KO_unch_active_up_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_KO_unch_ci_up), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_unch/upregulated_by_ci/sublist_KO_unch_ci_up_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+write_xlsx(rownames_to_column(as.data.frame(res_KO_unch_ci_down), "gene_id"),
+           path = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_unch/downregulated_by_ci/sublist_KO_unch_ci_down_grouped_HDAC2KO_vs_ctrl.xlsx")
+
+```
+
+## Quality control
+```{r quality_check}
+summary(res)
+options(scipen = 5)
+
+plotMA(res, ylim = c(-10,10), main = "group HDAC2 KO vs wt native \n rowsum > 1")
+
+options(scipen = 0)
+```
+
+## Create Heatmaps of genes for comparison of changes.
+Get the FoldChange Estimates from dds object and collapse it to have only significant genes in the list.
+Since the object betas has the gene ids as Attribute, change them to gene names in order to see the names in the Heatmap. Create Heatmaps according to the grouping above
+
+## i) When both active and inactive HDAC2 do the same (when upregulated in KO).
+```{r gene_heatmap_same_up, out.width = "50%"}
+betas <- coef(dds)
+
+from_res_up <- rownames(res_KO_up_active_down_ci_down)
+from_betas <- rownames(betas)
+#setdiff(from_betas, from_res_up)
+betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(res_KO_up_active_down_ci_down))), ]
+betas_sig <- betas_sig[match(rownames(res_KO_up_active_down_ci_down), row.names(betas_sig)),]
+(all(rownames(betas_sig) == rownames(res_KO_up_active_down_ci_down)))
+
+betas_sig_tbl <- as_tibble(betas_sig, rownames = NA) %>% rownames_to_column(var = "rnames")
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_active_vs_HDAC1ko_native
+                    = group_HDAC1ko_active_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_inactive_vs_HDAC1ko_native
+                    = group_HDAC1ko_inactive_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_active_vs_HDAC2ko_native
+                    = group_HDAC2ko_active_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_inactive_vs_HDAC2ko_native
+                    = group_HDAC2ko_inactive_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+
+betas_sig_tbl <- column_to_rownames(betas_sig_tbl, var = "rnames")
+betas_sig <- as.matrix(betas_sig_tbl)
+
+(resultsNames(dds))
+betascols <- c("intercept", "HDAC1KO HDAC1wt vs ctrl", "HDAC1KO HDAC1Mut vs ctrl", "HDAC1KO vs ctrl", "HDAC2KO HDAC2wt vs ctrl", "HDAC2KO HDAC2Mut vs ctrl", "HDAC2KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut")
+attr(betas_sig, "dimnames") <- list(res_KO_up_active_down_ci_down$gene_name, betascols)
+
+topGenes <- order(res_KO_up_active_down_ci_down$log2FoldChange, decreasing = TRUE)
+mat <- betas_sig[topGenes, -1]
+thr <- 3
+mat[mat < -thr] <- -thr
+mat[mat > thr] <- thr
+
+col.order <- c("HDAC2KO vs ctrl", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut", "HDAC1KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut")
+mat <- mat[,col.order]
+
+sample_cols <- data.frame(compared = rep(c("HD2 against ctrl", "HD2 against KO",
+                                           "HD1 against ctrl", "HD1 against KO"), c(1,2, 1, 2)))
+row.names(sample_cols) <- colnames(mat)
+
+pheatmap(mat, breaks = seq(from=-thr, to=thr, length=101), cluster_col = FALSE, cluster_row =TRUE,
+         fontsize_col = 15, angle_col = 90, main = "active and inactive HDAC2 do the same",
+         cellheight = 12, width = 6, gaps_col = 3, annotation_col = sample_cols,
+         filename = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_up/downregulated_by_wt/HDAC2_ci_same.png")
+include_graphics("20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_up/downregulated_by_wt/HDAC2_ci_same.png")
+```
+
+## ii) When the catalytically inactive HDAC2 doesn't affect gene regulation (when upregulated in KO).
+```{r gene_heatmap_no_change_up, out.width = "50%"}
+betas <- coef(dds)
+
+from_res_up <- rownames(res_KO_up_active_down_ci_unch)
+from_betas <- rownames(betas)
+#setdiff(from_betas, from_res_up)
+betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(res_KO_up_active_down_ci_unch))), ]
+betas_sig <- betas_sig[match(rownames(res_KO_up_active_down_ci_unch), row.names(betas_sig)),]
+(all(rownames(betas_sig) == rownames(res_KO_up_active_down_ci_unch)))
+
+betas_sig_tbl <- as_tibble(betas_sig, rownames = NA) %>% rownames_to_column(var = "rnames")
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_active_vs_HDAC1ko_native
+                    = group_HDAC1ko_active_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_inactive_vs_HDAC1ko_native
+                    = group_HDAC1ko_inactive_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_active_vs_HDAC2ko_native
+                    = group_HDAC2ko_active_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_inactive_vs_HDAC2ko_native
+                    = group_HDAC2ko_inactive_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+
+betas_sig_tbl <- column_to_rownames(betas_sig_tbl, var = "rnames")
+betas_sig <- as.matrix(betas_sig_tbl)
+
+(resultsNames(dds))
+betascols <- c("intercept", "HDAC1KO HDAC1wt vs ctrl", "HDAC1KO HDAC1Mut vs ctrl", "HDAC1KO vs ctrl", "HDAC2KO HDAC2wt vs ctrl", "HDAC2KO HDAC2Mut vs ctrl", "HDAC2KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut")
+attr(betas_sig, "dimnames") <- list(res_KO_up_active_down_ci_unch$gene_name, betascols)
+
+topGenes <- order(res_KO_up_active_down_ci_unch$log2FoldChange, decreasing = TRUE)
+mat <- betas_sig[topGenes, -1]
+thr <- 3
+mat[mat < -thr] <- -thr
+mat[mat > thr] <- thr
+
+col.order <- c("HDAC2KO vs ctrl", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut", "HDAC1KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut")
+mat <- mat[,col.order]
+
+sample_cols <- data.frame(compared = rep(c("HD2 against ctrl", "HD2 against KO",
+                                           "HD1 against ctrl", "HD1 against KO"), c(1,2, 1, 2)))
+row.names(sample_cols) <- colnames(mat)
+
+pheatmap(mat, breaks = seq(from=-thr, to=thr, length=101), cluster_col = FALSE, cluster_row =TRUE, fontsize_col = 15, angle_col = 90, main = "catalytically inactive HDAC2 \n doesn't affect gene regulation",
+         cellheight = 12, width = 6, gaps_col = 3, annotation_col = sample_cols,
+         filename = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_up/downregulated_by_wt/HDAC2_ci_nochange.png")
+include_graphics("20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_up/downregulated_by_wt/HDAC2_ci_nochange.png")
+```
+
+## iii) dominant negative effect (when upregulated in KO).
+```{r gene_heatmap_dominant_negative_up, out.width = "50%"}
+betas <- coef(dds)
+
+from_res_up <- rownames(res_KO_up_active_down_ci_up)
+from_betas <- rownames(betas)
+#setdiff(from_betas, from_res_up)
+betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(res_KO_up_active_down_ci_up))), ]
+betas_sig <- betas_sig[match(rownames(res_KO_up_active_down_ci_up), row.names(betas_sig)),]
+(all(rownames(betas_sig) == rownames(res_KO_up_active_down_ci_up)))
+
+betas_sig_tbl <- as_tibble(betas_sig, rownames = NA) %>% rownames_to_column(var = "rnames")
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_active_vs_HDAC1ko_native
+                    = group_HDAC1ko_active_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_inactive_vs_HDAC1ko_native
+                    = group_HDAC1ko_inactive_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_active_vs_HDAC2ko_native
+                    = group_HDAC2ko_active_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_inactive_vs_HDAC2ko_native
+                    = group_HDAC2ko_inactive_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+
+betas_sig_tbl <- column_to_rownames(betas_sig_tbl, var = "rnames")
+betas_sig <- as.matrix(betas_sig_tbl)
+
+(resultsNames(dds))
+betascols <- c("intercept", "HDAC1KO HDAC1wt vs ctrl", "HDAC1KO HDAC1Mut vs ctrl", "HDAC1KO vs ctrl", "HDAC2KO HDAC2wt vs ctrl", "HDAC2KO HDAC2Mut vs ctrl", "HDAC2KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut")
+attr(betas_sig, "dimnames") <- list(res_KO_up_active_down_ci_up$gene_name, betascols)
+
+topGenes <- order(res_KO_up_active_down_ci_up$log2FoldChange, decreasing = TRUE)
+mat <- betas_sig[topGenes, -1]
+thr <- 3
+mat[mat < -thr] <- -thr
+mat[mat > thr] <- thr
+
+col.order <- c("HDAC2KO vs ctrl", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut", "HDAC1KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut")
+mat <- mat[,col.order]
+
+sample_cols <- data.frame(compared = rep(c("HD2 against ctrl", "HD2 against KO",
+                                           "HD1 against ctrl", "HD1 against KO"), c(1,2, 1, 2)))
+row.names(sample_cols) <- colnames(mat)
+
+pheatmap(mat, breaks = seq(from=-thr, to=thr, length=101), cluster_col = FALSE, cluster_row =TRUE, fontsize_col = 15, angle_col = 90, main = "dominant negative effect",
+         cellheight = 12, width = 6, gaps_col = 3, annotation_col = sample_cols,
+         filename = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_up/downregulated_by_wt/HDAC2_ci_dominantNegative.png")
+include_graphics("20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_up/downregulated_by_wt/HDAC2_ci_dominantNegative.png")
+```
+
+## i) When both active and inactive HDAC2 do the same (when downregulated in KO).
+```{r gene_heatmap_same_down, out.width = "50%"}
+betas <- coef(dds)
+
+from_res_down <- rownames(res_KO_down_active_up_ci_up)
+from_betas <- rownames(betas)
+#setdiff(from_betas, from_res_down)
+betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(res_KO_down_active_up_ci_up))), ]
+betas_sig <- betas_sig[match(rownames(res_KO_down_active_up_ci_up), row.names(betas_sig)),]
+(all(rownames(betas_sig) == rownames(res_KO_down_active_up_ci_up)))
+
+betas_sig_tbl <- as_tibble(betas_sig, rownames = NA) %>% rownames_to_column(var = "rnames")
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_active_vs_HDAC1ko_native
+                    = group_HDAC1ko_active_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_inactive_vs_HDAC1ko_native
+                    = group_HDAC1ko_inactive_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_active_vs_HDAC2ko_native
+                    = group_HDAC2ko_active_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_inactive_vs_HDAC2ko_native
+                    = group_HDAC2ko_inactive_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+
+betas_sig_tbl <- column_to_rownames(betas_sig_tbl, var = "rnames")
+betas_sig <- as.matrix(betas_sig_tbl)
+
+(resultsNames(dds))
+betascols <- c("intercept", "HDAC1KO HDAC1wt vs ctrl", "HDAC1KO HDAC1Mut vs ctrl", "HDAC1KO vs ctrl", "HDAC2KO HDAC2wt vs ctrl", "HDAC2KO HDAC2Mut vs ctrl", "HDAC2KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut")
+attr(betas_sig, "dimnames") <- list(res_KO_down_active_up_ci_up$gene_name, betascols)
+
+topGenes <- order(res_KO_down_active_up_ci_up$log2FoldChange, decreasing = FALSE)
+mat <- betas_sig[topGenes, -1]
+thr <- 3
+mat[mat < -thr] <- -thr
+mat[mat > thr] <- thr
+
+col.order <- c("HDAC2KO vs ctrl", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut", "HDAC1KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut")
+mat <- mat[,col.order]
+
+pheatmap(mat, breaks = seq(from=-thr, to=thr, length=101), cluster_col = FALSE, cluster_row =TRUE, fontsize_col = 15, angle_col = 90, main = "active and inactive HDAC2 do the same",
+         cellheight = 12, width = 6, gaps_col = 3,
+         filename = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_down/upregulated_by_wt/HDAC2_ci_same.png")
+include_graphics("20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_down/upregulated_by_wt/HDAC2_ci_same.png")
+```
+
+## ii) When the catalytically inactive HDAC2 doesn't affect gene regulation (when downregulated in KO).
+```{r gene_heatmap_no_change_down, out.width = "50%"}
+betas <- coef(dds)
+
+from_res_down <- rownames(res_KO_down_active_up_ci_unch)
+from_betas <- rownames(betas)
+#setdiff(from_betas, from_res_down)
+betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(res_KO_down_active_up_ci_unch))), ]
+betas_sig <- betas_sig[match(rownames(res_KO_down_active_up_ci_unch), row.names(betas_sig)),]
+(all(rownames(betas_sig) == rownames(res_KO_down_active_up_ci_unch)))
+
+betas_sig_tbl <- as_tibble(betas_sig, rownames = NA) %>% rownames_to_column(var = "rnames")
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_active_vs_HDAC1ko_native
+                    = group_HDAC1ko_active_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_inactive_vs_HDAC1ko_native
+                    = group_HDAC1ko_inactive_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_active_vs_HDAC2ko_native
+                    = group_HDAC2ko_active_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_inactive_vs_HDAC2ko_native
+                    = group_HDAC2ko_inactive_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+
+betas_sig_tbl <- column_to_rownames(betas_sig_tbl, var = "rnames")
+betas_sig <- as.matrix(betas_sig_tbl)
+
+(resultsNames(dds))
+betascols <- c("intercept", "HDAC1KO HDAC1wt vs ctrl", "HDAC1KO HDAC1Mut vs ctrl", "HDAC1KO vs ctrl", "HDAC2KO HDAC2wt vs ctrl", "HDAC2KO HDAC2Mut vs ctrl", "HDAC2KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut")
+attr(betas_sig, "dimnames") <- list(res_KO_down_active_up_ci_unch$gene_name, betascols)
+
+topGenes <- order(res_KO_down_active_up_ci_unch$log2FoldChange, decreasing = FALSE)
+mat <- betas_sig[topGenes, -1]
+thr <- 3
+mat[mat < -thr] <- -thr
+mat[mat > thr] <- thr
+
+col.order <- c("HDAC2KO vs ctrl", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut", "HDAC1KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut")
+mat <- mat[,col.order]
+
+pheatmap(mat, breaks = seq(from=-thr, to=thr, length=101), cluster_col = FALSE, cluster_row =TRUE, fontsize_col = 15, angle_col = 90, main = "catalytically inactive HDAC2 \n doesn't affect gene regulation",
+         cellheight = 12, width = 6, gaps_col = 3,
+         filename = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_down/upregulated_by_wt/HDAC2_ci_nochange.png")
+include_graphics("20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_down/upregulated_by_wt/HDAC2_ci_nochange.png")
+```
+
+## iii) dominant negative effect (when downregulated in KO).
+```{r gene_heatmap_dominant_negative_down, out.width = "50%"}
+betas <- coef(dds)
+
+from_res_down <- rownames(res_KO_down_active_up_ci_down)
+from_betas <- rownames(betas)
+#setdiff(from_betas, from_res_down)
+betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(res_KO_down_active_up_ci_down))), ]
+betas_sig <- betas_sig[match(rownames(res_KO_down_active_up_ci_down), row.names(betas_sig)),]
+(all(rownames(betas_sig) == rownames(res_KO_down_active_up_ci_down)))
+
+betas_sig_tbl <- as_tibble(betas_sig, rownames = NA) %>% rownames_to_column(var = "rnames")
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_active_vs_HDAC1ko_native
+                    = group_HDAC1ko_active_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_inactive_vs_HDAC1ko_native
+                    = group_HDAC1ko_inactive_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_active_vs_HDAC2ko_native
+                    = group_HDAC2ko_active_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_inactive_vs_HDAC2ko_native
+                    = group_HDAC2ko_inactive_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+
+betas_sig_tbl <- column_to_rownames(betas_sig_tbl, var = "rnames")
+betas_sig <- as.matrix(betas_sig_tbl)
+
+(resultsNames(dds))
+betascols <- c("intercept", "HDAC1KO HDAC1wt vs ctrl", "HDAC1KO HDAC1Mut vs ctrl", "HDAC1KO vs ctrl", "HDAC2KO HDAC2wt vs ctrl", "HDAC2KO HDAC2Mut vs ctrl", "HDAC2KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut")
+attr(betas_sig, "dimnames") <- list(res_KO_down_active_up_ci_down$gene_name, betascols)
+
+topGenes <- order(res_KO_down_active_up_ci_down$log2FoldChange, decreasing = FALSE)
+mat <- betas_sig[topGenes, -1]
+thr <- 3
+mat[mat < -thr] <- -thr
+mat[mat > thr] <- thr
+
+col.order <- c("HDAC2KO vs ctrl", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut", "HDAC1KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut")
+mat <- mat[,col.order]
+
+pheatmap(mat, breaks = seq(from=-thr, to=thr, length=101), cluster_col = FALSE, cluster_row =TRUE, fontsize_col = 15, angle_col = 90, main = "dominant negative effect",
+         cellheight = 12, width = 6, gaps_col = 3,
+         filename = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_down/upregulated_by_wt/HDAC2_ci_dominantNegative.png")
+include_graphics("20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_down/upregulated_by_wt/HDAC2_ci_dominantNegative.png")
+```
+
+## iv) only introduction of the catalytically inactive HDAC2 causes deregulation (But KO not)
+```{r gene_heatmap_only_ci_up, out.width = "50%"}
+betas <- coef(dds)
+
+from_res_unch <- rownames(res_KO_unch_ci_up)
+from_betas <- rownames(betas)
+#setdiff(from_betas, from_res_unch)
+betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(res_KO_unch_ci_up))), ]
+betas_sig <- betas_sig[match(rownames(res_KO_unch_ci_up), row.names(betas_sig)),]
+(all(rownames(betas_sig) == rownames(res_KO_unch_ci_up)))
+
+betas_sig_tbl <- as_tibble(betas_sig, rownames = NA) %>% rownames_to_column(var = "rnames")
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_active_vs_HDAC1ko_native
+                    = group_HDAC1ko_active_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_inactive_vs_HDAC1ko_native
+                    = group_HDAC1ko_inactive_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_active_vs_HDAC2ko_native
+                    = group_HDAC2ko_active_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_inactive_vs_HDAC2ko_native
+                    = group_HDAC2ko_inactive_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+
+betas_sig_tbl <- column_to_rownames(betas_sig_tbl, var = "rnames")
+betas_sig <- as.matrix(betas_sig_tbl)
+
+(resultsNames(dds))
+betascols <- c("intercept", "HDAC1KO HDAC1wt vs ctrl", "HDAC1KO HDAC1Mut vs ctrl", "HDAC1KO vs ctrl", "HDAC2KO HDAC2wt vs ctrl", "HDAC2KO HDAC2Mut vs ctrl", "HDAC2KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut")
+attr(betas_sig, "dimnames") <- list(res_KO_unch_ci_up$gene_name, betascols)
+
+topGenes <- order(res_KO_unch_ci_up$log2FoldChange, decreasing = TRUE)
+mat <- betas_sig[topGenes, -1]
+thr <- 3
+mat[mat < -thr] <- -thr
+mat[mat > thr] <- thr
+
+col.order <- c("HDAC2KO vs ctrl", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut", "HDAC1KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut")
+mat <- mat[,col.order]
+
+pheatmap(mat, breaks = seq(from=-thr, to=thr, length=101), cluster_col = FALSE, cluster_row =TRUE, fontsize_col = 15, angle_col = 90, main = "no change in KO, \n but deregulation by ci HDAC2",
+         cellheight = 12, width = 6, gaps_col = 3,
+         filename = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_unch/upregulated_by_ci/HDAC2_only_ci_up.png")
+include_graphics("20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_unch/upregulated_by_ci/HDAC2_only_ci_up.png")
+```
+
+```{r gene_heatmap_only_ci_down, out.width = "50%"}
+betas <- coef(dds)
+
+from_res_unch <- rownames(res_KO_unch_ci_down)
+from_betas <- rownames(betas)
+#setdiff(from_betas, from_res_unch)
+betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(res_KO_unch_ci_down))), ]
+betas_sig <- betas_sig[match(rownames(res_KO_unch_ci_down), row.names(betas_sig)),]
+(all(rownames(betas_sig) == rownames(res_KO_unch_ci_down)))
+
+betas_sig_tbl <- as_tibble(betas_sig, rownames = NA) %>% rownames_to_column(var = "rnames")
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_active_vs_HDAC1ko_native
+                    = group_HDAC1ko_active_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_inactive_vs_HDAC1ko_native
+                    = group_HDAC1ko_inactive_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_active_vs_HDAC2ko_native
+                    = group_HDAC2ko_active_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_inactive_vs_HDAC2ko_native
+                    = group_HDAC2ko_inactive_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+
+betas_sig_tbl <- column_to_rownames(betas_sig_tbl, var = "rnames")
+betas_sig <- as.matrix(betas_sig_tbl)
+
+(resultsNames(dds))
+betascols <- c("intercept", "HDAC1KO HDAC1wt vs ctrl", "HDAC1KO HDAC1Mut vs ctrl", "HDAC1KO vs ctrl", "HDAC2KO HDAC2wt vs ctrl", "HDAC2KO HDAC2Mut vs ctrl", "HDAC2KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut")
+attr(betas_sig, "dimnames") <- list(res_KO_unch_ci_down$gene_name, betascols)
+
+topGenes <- order(res_KO_unch_ci_down$log2FoldChange, decreasing = TRUE)
+mat <- betas_sig[topGenes, -1]
+thr <- 3
+mat[mat < -thr] <- -thr
+mat[mat > thr] <- thr
+
+col.order <- c("HDAC2KO vs ctrl", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut", "HDAC1KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut")
+mat <- mat[,col.order]
+
+pheatmap(mat, breaks = seq(from=-thr, to=thr, length=101), cluster_col = FALSE, cluster_row =TRUE, fontsize_col = 15, angle_col = 90, main = "no change in KO, \n but deregulation by ci HDAC2",
+         cellheight = 12, width = 6, gaps_col = 3,
+         filename = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_unch/downregulated_by_ci/HDAC2_only_ci_down.png")
+include_graphics("20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_unch/downregulated_by_ci/HDAC2_only_ci_down.png")
+```
+
+
+## v) only introduction of the wt HDAC2 causes deregulation (But KO not)
+```{r gene_heatmap_only_wt_up, out.width = "50%"}
+betas <- coef(dds)
+
+from_res_unch <- rownames(res_KO_unch_active_up)
+from_betas <- rownames(betas)
+#setdiff(from_betas, from_res_unch)
+betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(res_KO_unch_active_up))), ]
+betas_sig <- betas_sig[match(rownames(res_KO_unch_active_up), row.names(betas_sig)),]
+(all(rownames(betas_sig) == rownames(res_KO_unch_active_up)))
+
+betas_sig_tbl <- as_tibble(betas_sig, rownames = NA) %>% rownames_to_column(var = "rnames")
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_active_vs_HDAC1ko_native
+                    = group_HDAC1ko_active_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_inactive_vs_HDAC1ko_native
+                    = group_HDAC1ko_inactive_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_active_vs_HDAC2ko_native
+                    = group_HDAC2ko_active_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_inactive_vs_HDAC2ko_native
+                    = group_HDAC2ko_inactive_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+
+betas_sig_tbl <- column_to_rownames(betas_sig_tbl, var = "rnames")
+betas_sig <- as.matrix(betas_sig_tbl)
+
+(resultsNames(dds))
+betascols <- c("intercept", "HDAC1KO HDAC1wt vs ctrl", "HDAC1KO HDAC1Mut vs ctrl", "HDAC1KO vs ctrl", "HDAC2KO HDAC2wt vs ctrl", "HDAC2KO HDAC2Mut vs ctrl", "HDAC2KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut")
+attr(betas_sig, "dimnames") <- list(res_KO_unch_active_up$gene_name, betascols)
+
+topGenes <- order(res_KO_unch_active_up$log2FoldChange, decreasing = TRUE)
+mat <- betas_sig[topGenes, -1]
+thr <- 3
+mat[mat < -thr] <- -thr
+mat[mat > thr] <- thr
+
+col.order <- c("HDAC2KO vs ctrl", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut", "HDAC1KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut")
+mat <- mat[,col.order]
+
+pheatmap(mat, breaks = seq(from=-thr, to=thr, length=101), cluster_col = FALSE, cluster_row =TRUE, fontsize_col = 15, angle_col = 90, main = "no change in KO, \n but deregulation by wt HDAC2",
+         cellheight = 12, width = 6, gaps_col = 3,
+         filename = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_unch/upregulated_by_wt/HDAC2_only_active_up.png")
+include_graphics("20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_unch/upregulated_by_wt/HDAC2_only_active_up.png")
+```
+
+```{r gene_heatmap_only_wt_down, out.width = "50%"}
+betas <- coef(dds)
+
+from_res_unch <- rownames(res_KO_unch_active_down)
+from_betas <- rownames(betas)
+#setdiff(from_betas, from_res_unch)
+betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(res_KO_unch_active_down))), ]
+betas_sig <- betas_sig[match(rownames(res_KO_unch_active_down), row.names(betas_sig)),]
+(all(rownames(betas_sig) == rownames(res_KO_unch_active_down)))
+
+betas_sig_tbl <- as_tibble(betas_sig, rownames = NA) %>% rownames_to_column(var = "rnames")
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_active_vs_HDAC1ko_native
+                    = group_HDAC1ko_active_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_inactive_vs_HDAC1ko_native
+                    = group_HDAC1ko_inactive_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_active_vs_HDAC2ko_native
+                    = group_HDAC2ko_active_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC2ko_inactive_vs_HDAC2ko_native
+                    = group_HDAC2ko_inactive_vs_wt_native - group_HDAC2ko_native_vs_wt_native)
+
+betas_sig_tbl <- column_to_rownames(betas_sig_tbl, var = "rnames")
+betas_sig <- as.matrix(betas_sig_tbl)
+
+(resultsNames(dds))
+betascols <- c("intercept", "HDAC1KO HDAC1wt vs ctrl", "HDAC1KO HDAC1Mut vs ctrl", "HDAC1KO vs ctrl", "HDAC2KO HDAC2wt vs ctrl", "HDAC2KO HDAC2Mut vs ctrl", "HDAC2KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut")
+attr(betas_sig, "dimnames") <- list(res_KO_unch_active_down$gene_name, betascols)
+
+topGenes <- order(res_KO_unch_active_down$log2FoldChange, decreasing = TRUE)
+mat <- betas_sig[topGenes, -1]
+thr <- 3
+mat[mat < -thr] <- -thr
+mat[mat > thr] <- thr
+
+col.order <- c("HDAC2KO vs ctrl", "HDAC2KO HDAC2wt", "HDAC2KO HDAC2Mut", "HDAC1KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut")
+mat <- mat[,col.order]
+
+pheatmap(mat, breaks = seq(from=-thr, to=thr, length=101), cluster_col = FALSE, cluster_row =TRUE, fontsize_col = 15, angle_col = 90, main = "no change in KO, \n but deregulation by wt HDAC2",
+         cellheight = 12, width = 6, gaps_col = 3,
+         filename = "20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_unch/downregulated_by_wt/HDAC2_only_active_down.png")
+include_graphics("20210405_HDACko_HDAC1_HDAC2_reintroduction/KO_unch/downregulated_by_wt/HDAC2_only_active_down.png")
+```
+
+
+## R status
+```{r}
+sessionInfo()
+```

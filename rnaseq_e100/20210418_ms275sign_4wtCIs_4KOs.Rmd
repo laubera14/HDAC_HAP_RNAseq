@@ -1,0 +1,992 @@
+---
+title: 'HAP FFG RNA-seq: Comparison of Inhibitor Treatment to HDAC CIs & KOs (3µM MS275) updated to hg38_e100'
+author: "Adrian Arnel Lauber"
+date: "18.04.2021"
+output:
+  html_document: 
+    theme: cerulean
+    highlight: monochrome
+    toc: yes
+    toc_float: yes
+  word_document:
+    toc: yes
+  pdf_document: 
+    toc: yes
+  html_notebook: 
+    toc: yes
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      include = TRUE,
+                      warning=FALSE,
+                      message=TRUE,
+                      fig.align = 'center')
+```
+
+# Background & Summary
+Comparison of the similarity between HDAC1-8 CI and KO to Inhibitor and to each other. The Wald test is applied, which means the Null-hypothesis here is simply that there is no difference between the MS275 sample and the ctrl cells.
+
+Also you will find in this report a comparison between the wardD hirarchical clustering and the k-means clustering. Both clustering methods try to minimize as much as possible the differences between the log2fold changes in each row. Though the methods differ, the result is very similar.
+
+DESeq is ran with 10 samples. The ctrl sample has 6 replicates (3 from the old batch & and 3 from the new batch) and the other samples possess 3 replicates each. Genes whose read counts across all samples is under 1 are discarded from the analysis.
+
+## Performed steps for DEseq2
+* Load R libraries:
+
+```{r imports, message=FALSE}
+library("tidyverse")
+library("DESeq2")
+library("pheatmap")
+library("writexl")
+library("knitr")
+library("BiocParallel")
+```
+
+```{r parallelization}
+platform <- Sys.info()["sysname"]
+
+if (platform == "Linux") {
+  library("BiocParallel")
+  register(MulticoreParam(2))
+}
+```
+
+
+```{r functions}
+# Create heatmap for MS275 in 1st row. And 4 rows CI(wtBG) + 4 rows KO. Each ordered according to MS275
+create_heatmap <- function(inp_list, n_genes, title, out_file, sort_decr = TRUE, clustered = TRUE, numbers = FALSE) {
+
+  betas <- coef(dds)
+
+  betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(inp_list))), ]
+  betas_sig <- betas_sig[match(rownames(inp_list), row.names(betas_sig)),]
+
+
+  betascols <- c("intercept", "HDAC1wt HDAC1Mut", "HDAC2wt HDAC2Mut", "HDAC3wt HDAC3Mut", "HDAC8wt HDAC8Mut",
+                 "HDAC1KO", "HDAC2KO", "HDAC3KO", "HDAC8KO", "MS275")
+  attr(betas_sig, "dimnames") <- list(inp_list$gene_name, betascols)
+  
+  topGenes <- head(order(inp_list$log2FoldChange, decreasing = sort_decr), n_genes)
+  mat <- betas_sig[topGenes, -1]
+  
+  thr <- 5
+  colramp <- seq(from=-thr, to=thr, length=101)
+  if (numbers == TRUE){
+    thr <- 21
+    colramp <- seq(from=-thr+12, to=thr-12, length=101)
+  }
+  
+  mat[mat < -thr] <- -thr
+  mat[mat > thr] <- thr
+
+  col.order <- c("MS275", "HDAC1wt HDAC1Mut", "HDAC2wt HDAC2Mut", "HDAC3wt HDAC3Mut", "HDAC8wt HDAC8Mut",
+                 "HDAC1KO", "HDAC2KO", "HDAC3KO", "HDAC8KO")
+  mat <- mat[,col.order]
+
+  my_heatmap <- pheatmap(mat, breaks = colramp, cluster_col = FALSE,
+                         cluster_rows = clustered, #set treeheight_row = 0 to mask
+           fontsize_col = 15, angle_col = 90, main = title, display_numbers = numbers,
+           cellheight = 12, clustering_method = "ward.D2", gaps_col = c(1, 5),
+           cellwidth = 50, legend = TRUE, fontsize = 10, fontsize_row = 10,
+           filename = out_file, cutree_rows = 5)
+  
+  if (clustered == FALSE) {
+    return(mat)
+  }
+  
+  return(my_heatmap)
+}
+
+#------------------------------------------------------------------------------#
+# Big complete heatmap creator
+create_heatmap_complete <- function(inp_list, n_genes, title, out_file, sort_decr = TRUE, clustered = TRUE, numbers = FALSE) {
+
+  betas <- coef(dds)
+
+  betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(inp_list))), ]
+  betas_sig <- betas_sig[match(rownames(inp_list), row.names(betas_sig)),]
+
+
+  betascols <- c("intercept", "HDAC1wt HDAC1Mut", "HDAC2wt HDAC2Mut", "HDAC3wt HDAC3Mut", "HDAC8wt HDAC8Mut",
+                 "HDAC1KO", "HDAC2KO", "HDAC3KO", "HDAC8KO", "MS275")
+  attr(betas_sig, "dimnames") <- list(inp_list$gene_name, betascols)
+  
+  topGenes <- head(order(inp_list$log2FoldChange, decreasing = sort_decr), n_genes)
+  mat <- betas_sig[topGenes, -1]
+  
+  thr <- 5
+  colramp <- seq(from=-thr, to=thr, length=101)
+  if (numbers == TRUE){
+    thr <- 21
+    colramp <- seq(from=-thr+12, to=thr-12, length=101)
+  }
+  
+  mat[mat < -thr] <- -thr
+  mat[mat > thr] <- thr
+
+  col.order <- c("MS275", "HDAC1wt HDAC1Mut", "HDAC2wt HDAC2Mut", "HDAC3wt HDAC3Mut", "HDAC8wt HDAC8Mut",
+                 "HDAC1KO", "HDAC2KO", "HDAC3KO", "HDAC8KO")
+  mat <- mat[,col.order]
+
+  my_heatmap <- pheatmap(mat, breaks = colramp, cluster_col = FALSE,
+                         cluster_rows = clustered, #set treeheight_row = 0 to mask
+           fontsize_col = 15, angle_col = 90, main = title, display_numbers = numbers,
+           cellheight = 2, clustering_method = "ward.D2", gaps_col = c(1, 5),
+           cellwidth = 50, legend = TRUE, fontsize = 10, show_rownames = FALSE,
+           filename = out_file, cutree_rows = 7)
+  
+  if (clustered == FALSE) {
+    return(mat)
+  }
+  
+  return(my_heatmap)
+}
+
+#------------------------------------------------------------------------------#
+# Modification for inversion of row order in heatmap MS275 up 120 genes
+create_heatmap_mod120 <- function(inp_list, n_genes, title, out_file, sort_decr = TRUE, clustered = TRUE, numbers = FALSE) {
+
+  betas <- coef(dds)
+
+  betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(inp_list))), ]
+  betas_sig <- betas_sig[match(rownames(inp_list), row.names(betas_sig)),]
+
+
+  betascols <- c("intercept", "HDAC1wt HDAC1Mut", "HDAC2wt HDAC2Mut", "HDAC3wt HDAC3Mut", "HDAC8wt HDAC8Mut",
+                 "HDAC1KO", "HDAC2KO", "HDAC3KO", "HDAC8KO", "MS275")
+  attr(betas_sig, "dimnames") <- list(inp_list$gene_name, betascols)
+  
+  topGenes <- head(order(inp_list$log2FoldChange, decreasing = sort_decr), n_genes)
+  mat <- betas_sig[topGenes, -1]
+  
+  thr <- 5
+  colramp <- seq(from=-thr, to=thr, length=101)
+  if (numbers == TRUE){
+    thr <- 21
+    colramp <- seq(from=-thr+12, to=thr-12, length=101)
+  }
+  
+  mat[mat < -thr] <- -thr
+  mat[mat > thr] <- thr
+
+  col.order <- c("MS275", "HDAC1wt HDAC1Mut", "HDAC2wt HDAC2Mut", "HDAC3wt HDAC3Mut", "HDAC8wt HDAC8Mut",
+                 "HDAC1KO", "HDAC2KO", "HDAC3KO", "HDAC8KO")
+  mat <- mat[,col.order]
+
+  my_heatmap <- pheatmap(mat, breaks = colramp, cluster_col = FALSE,
+                         cluster_rows = clustered, #set treeheight_row = 0 to mask
+           fontsize_col = 15, angle_col = 90, main = title, display_numbers = numbers,
+           cellheight = 12, clustering_method = "ward.D2", gaps_col = c(1, 5),
+           cellwidth = 50, legend = TRUE, fontsize = 10, fontsize_row = 10,
+           filename = out_file, cutree_rows = 5, clustering_callback = callback120)
+  
+  if (clustered == FALSE) {
+    return(mat)
+  }
+  
+  return(my_heatmap)
+}
+
+# Modify ordering of the clusters 120genes
+callback120 = function(hc, mat){
+    upper <- mat[1:67,]
+    lower <- mat[68:120,]
+    rev_lower <- lower[nrow(lower):1,] # change order upside down of lower half
+    united <- rbind(upper, lower) # But both halfs together again
+    reversed <- united[nrow(united):1,]
+   # reversed = rev(mat)
+    dend = reorder(as.dendrogram(hc), wts = reversed)
+    as.hclust(dend)
+}
+
+#------------------------------------------------------------------------------#
+# kmeans clustering and heatmap generation
+create_heatmap_kmeans <- function(inp_list, n_genes, title, out_file, sort_decr = TRUE, clustered = FALSE, numbers = FALSE) {
+
+  betas <- coef(dds)
+
+  betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(inp_list))), ]
+  betas_sig <- betas_sig[match(rownames(inp_list), row.names(betas_sig)),]
+
+
+  betascols <- c("intercept", "HDAC1wt HDAC1Mut", "HDAC2wt HDAC2Mut", "HDAC3wt HDAC3Mut", "HDAC8wt HDAC8Mut",
+                 "HDAC1KO", "HDAC2KO", "HDAC3KO", "HDAC8KO", "MS275")
+  attr(betas_sig, "dimnames") <- list(inp_list$gene_name, betascols)
+  
+  topGenes <- head(order(inp_list$log2FoldChange, decreasing = sort_decr), n_genes)
+  mat <- betas_sig[topGenes, -1]
+  
+  #Do kmeans clustering here
+  km_obj <- kmeans(mat, 5)
+  mat <- cbind(mat, km_obj$cluster)
+  reorder <- order(mat[, 10])
+  mat <- mat[reorder, ]
+  row_gaps <- cumsum(km_obj$size[1:4])
+  outmat <- mat
+  
+  thr <- 5
+  colramp <- seq(from=-thr, to=thr, length=101)
+  if (numbers == TRUE){
+    thr <- 21
+    colramp <- seq(from=-thr+12, to=thr-12, length=101)
+  }
+  
+  mat[mat < -thr] <- -thr
+  mat[mat > thr] <- thr
+
+  col.order <- c("MS275", "HDAC1wt HDAC1Mut", "HDAC2wt HDAC2Mut", "HDAC3wt HDAC3Mut", "HDAC8wt HDAC8Mut",
+                 "HDAC1KO", "HDAC2KO", "HDAC3KO", "HDAC8KO")
+  mat <- mat[,col.order]
+
+  my_heatmap <- pheatmap(mat, breaks = colramp, cluster_col = FALSE,
+                         cluster_rows = clustered, #set treeheight_row = 0 to mask
+           fontsize_col = 15, angle_col = 90, main = title, display_numbers = numbers,
+           cellheight = 12, gaps_col = c(1, 5), gaps_row = row_gaps,
+           cellwidth = 50, legend = TRUE, fontsize = 10, fontsize_row = 10,
+           filename = out_file)
+  
+  if (clustered == FALSE) {
+    return(outmat)
+  }
+  
+  return(my_heatmap)
+}
+
+#------------------------------------------------------------------------------#
+# Big complete Heatmap kmeans clustering and heatmap generation
+create_heatmap_kmeans_complete <- function(inp_list, n_genes, title, out_file, sort_decr = TRUE, clustered = FALSE, numbers = FALSE) {
+
+  betas <- coef(dds)
+
+  betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(inp_list))), ]
+  betas_sig <- betas_sig[match(rownames(inp_list), row.names(betas_sig)),]
+
+
+  betascols <- c("intercept", "HDAC1wt HDAC1Mut", "HDAC2wt HDAC2Mut", "HDAC3wt HDAC3Mut", "HDAC8wt HDAC8Mut",
+                 "HDAC1KO", "HDAC2KO", "HDAC3KO", "HDAC8KO", "MS275")
+  attr(betas_sig, "dimnames") <- list(inp_list$gene_name, betascols)
+  
+  topGenes <- head(order(inp_list$log2FoldChange, decreasing = sort_decr), n_genes)
+  mat <- betas_sig[topGenes, -1]
+  
+  #Do kmeans clustering here
+  km_obj <- kmeans(mat, 7)
+  mat <- cbind(mat, km_obj$cluster)
+  reorder <- order(mat[, 10])
+  mat <- mat[reorder, ]
+  row_gaps <- cumsum(km_obj$size[1:6])
+  outmat <- mat
+  
+  thr <- 5
+  colramp <- seq(from=-thr, to=thr, length=101)
+  if (numbers == TRUE){
+    thr <- 21
+    colramp <- seq(from=-thr+12, to=thr-12, length=101)
+  }
+  
+  mat[mat < -thr] <- -thr
+  mat[mat > thr] <- thr
+
+  col.order <- c("MS275", "HDAC1wt HDAC1Mut", "HDAC2wt HDAC2Mut", "HDAC3wt HDAC3Mut", "HDAC8wt HDAC8Mut",
+                 "HDAC1KO", "HDAC2KO", "HDAC3KO", "HDAC8KO")
+  mat <- mat[,col.order]
+
+  my_heatmap <- pheatmap(mat, breaks = colramp, cluster_col = FALSE,
+                         cluster_rows = clustered, #set treeheight_row = 0 to mask
+           fontsize_col = 15, angle_col = 90, main = title, display_numbers = numbers,
+           cellheight = 2, gaps_col = c(1, 5), gaps_row = row_gaps,
+           cellwidth = 50, legend = TRUE, fontsize = 10, show_rownames = FALSE,
+           filename = out_file)
+  
+  if (clustered == FALSE) {
+    return(outmat)
+  }
+  
+  return(my_heatmap)
+}
+```
+
+```{r variables}
+#vector to collect the output results list names. Used for iteration over it and save the created lists as excel tables below.
+out_lists <- vector()
+```
+
+* Read raw count matrix and coldata
+  + Raw count matrix is provided by Michael Schuster of CEMM. 
+  + nome: Homo sapiens genome assembly hg38 (December 2013)
+  + Transcriptome: Homo sapiens transcriptome hg38_e100 (April 2020)
+  + STAR aligner was used for mapping of reads.
+  + The same RAW count numbers which where used in Schuster´s DEseq analysis are being read in here
+  + Coldata: Additional information about each sample. they are stored in the Metadata slot of the DEseq object
+
+```{r countmatrix}
+cts_full <- read_tsv("rnaseq_deseq_global_counts_raw.tsv")
+cts <- cts_full %>% select(gene_id, contains(c("HAP_13", "HAP_14", "HAP_1_", "HAP_2_", "HAP_3_", "HAP_MS3_", "KO"))) %>% column_to_rownames("gene_id")
+cts_matrix <- as.matrix(cts)
+
+coldata <- read.csv("rnaseq_deseq_global_samples.tsv", sep="\t", row.names=12, colClasses=c("NULL","NULL", "NULL", NA, NA, "NULL", NA, NA, NA, NA, "NULL", NA, "NULL", NA), stringsAsFactors = TRUE)
+
+
+featureData <- cts_full %>% select(gene_version:location)
+```
+
+* Difference between sample metadata and count matrix samples?
+  + The sample data table has to contain exactly the same samples in the same order as the count matrix table, where we chose already the samples of interest. If there is a difference, drop the following unused sample data.
+```{r difference}
+ctsc <- colnames(cts_matrix)
+coldatac <- rownames(coldata)
+setdiff(coldatac, ctsc)
+
+coldata <- coldata[!(row.names(coldata) %in% setdiff(rownames(coldata),ctsc)), ]
+```
+
+* Do the sample data table and the count matrix now contain the same samples in the same order?
+```{r sample_check, echo=TRUE}
+(all(rownames(coldata) == colnames(cts)))
+```
+
+* Levels of Factors should of course also be adjusted to our "sub-matrix"
+
+```{r correct_factors}
+coldata$genotype <- factor(coldata$genotype, levels = c("wt", "HDAC1ko", "HDAC2ko", "HDAC3ko", "HDAC8ko"))
+coldata$expression <- factor(coldata$expression, levels = c("native", "iHDAC1", "iHDAC2", "iHDAC3", "iHDAC8"))
+coldata$group <- factor(coldata$group, levels = c("wt_native", "wt_inactive_HDAC1", "wt_inactive_HDAC2", "wt_inactive_HDAC3", "wt_inactive_HDAC8", "HDAC1ko_native", "HDAC2ko_native", "HDAC3ko_native", "HDAC8ko_native", "wt_MS275_3uM_24h"))
+```
+
+* Create dds object + add metadata
+
+```{r dds_object_initialization}
+dds <- DESeqDataSetFromMatrix(countData = cts_matrix,
+                              colData = coldata,
+                              design = ~ group)
+
+mcols(dds) <- DataFrame(mcols(dds), featureData)
+```
+
+* relevel factors to set the reference
+
+```{r relevel_group_factor}
+dds$group <- factor(dds$group, levels = c("wt_native", "wt_inactive_HDAC1", "wt_inactive_HDAC2", "wt_inactive_HDAC3", "wt_inactive_HDAC8", "HDAC1ko_native", "HDAC2ko_native", "HDAC3ko_native", "HDAC8ko_native", "wt_MS275_3uM_24h"))
+```
+
+* Pre-filter the low raw count rows
+  + Here we can define the threshold for the sum of raw counts per row, so that rows (=genes) with a generally low count can be dropped. This threshold can also depend on the number of samples!
+
+```{r cutoff, echo=TRUE}
+keep <- rowSums(counts(dds)) > 1
+dds <- dds[keep,]
+```
+
+* Deseq
+```{r deseq}
+if (platform == "Linux") {
+  dds <- DESeq(dds, parallel=TRUE)
+} else {
+  dds <- DESeq(dds)
+}
+
+```
+
+* Create results object
+```{r}
+ms275_vs_ctrl_all <- results(dds)
+ms275_vs_ctrl_lfc <- results(dds, lfcThreshold = 1)
+```
+
+
+* Quality control
+```{r quality_check}
+summary(ms275_vs_ctrl_all)
+options(scipen = 5)
+
+# png(filename = "20210418_ms275sign_4wtCIs_4KOs_report/quality_check.png", width = 800, height = 600)
+plotMA(ms275_vs_ctrl_all, ylim = c(-8,8), main = "group MS275 vs wt native \n rowsum > 7")
+abline(h = c(-1, 1), col = "dodgerblue", lwd = 2)
+options(scipen = 0)
+dev.off()
+```
+
+* Extract all main contrasts from the dds object
+```{r contrasts}
+contrast_vector <- c(1,0,0,0,0,0,0,0,0,0)
+
+for (x in c(1:9)) {
+  contrast_vector <- head(contrast_vector, -1)
+  contrast_vector <- append(contrast_vector, 0, after = 0)
+  
+  current_contrast <- results(dds, contrast = contrast_vector, lfcThreshold = 1)
+  current_contrast$gene_name <- mcols(dds)$gene_name
+  
+  contrast_name <- resultsNames(dds)[x+1]
+  assign(contrast_name, current_contrast)
+  
+  out_lists <- c(out_lists, contrast_name)
+}
+```
+
+
+## Adding gene names/Types and chose significant genes for Heatmaps 
+For this task additional result tables are being generated. So I can chose the genes which fulfill the conditions.
+
+* add gene names to main gene set with log2foldChanges of MS275 relative to ctrl
+```{r main_set_names}
+ms275_vs_ctrl_all$gene_name <- mcols(dds)$gene_name
+ms275_vs_ctrl_all$gene_biotype <- mcols(dds)$gene_biotype
+out_lists <- c(out_lists, "ms275_vs_ctrl_all")
+```
+
+* Choose significant genes from main gene set and subset into upregulated, downregulated and unchanged genes (MS275 relative to ctrl)
+```{r significants}
+ms275_vs_ctrl <- subset(ms275_vs_ctrl_all, padj < 0.1)
+out_lists <- c(out_lists, "ms275_vs_ctrl")
+
+ms275_vs_ctrl_up <- subset(ms275_vs_ctrl_all, log2FoldChange > 1 & padj < 0.1)
+ms275_vs_ctrl_up <- ms275_vs_ctrl_up[order(ms275_vs_ctrl_up$log2FoldChange, decreasing = TRUE),]
+out_lists <- c(out_lists, "ms275_vs_ctrl_up")
+
+ms275_vs_ctrl_unch <- subset(ms275_vs_ctrl_all, log2FoldChange < 1 & log2FoldChange > -1 & padj < 0.1)
+ms275_vs_ctrl_unch <- ms275_vs_ctrl_unch[order(ms275_vs_ctrl_unch$log2FoldChange, decreasing = TRUE),]
+out_lists <- c(out_lists, "ms275_vs_ctrl_unch")
+
+ms275_vs_ctrl_down <- subset(ms275_vs_ctrl_all, log2FoldChange < -1 & padj < 0.1)
+ms275_vs_ctrl_down <- ms275_vs_ctrl_down[order(ms275_vs_ctrl_down$log2FoldChange, decreasing = TRUE),]
+out_lists <- c(out_lists, "ms275_vs_ctrl_down")
+```
+
+
+* Save all created lists additionally as Excel Sheets and count some gene numbers & calculate ratios.
+```{r create_lists}
+out_lists2 = out_lists
+comparison = vector()
+ratio = vector()
+out_lists_counts = vector()
+
+for (listname in out_lists) {
+  write_xlsx(rownames_to_column(as.data.frame(get(listname)), "gene_id"),
+           path = paste0("20210418_ms275sign_4wtCIs_4KOs_report/MS275_", listname, ".xlsx"))
+}
+
+#count and calculate ratios of gene numbers between all lists
+for (listname1 in out_lists) {
+  for (listname2 in out_lists2) {
+    comparison = c(comparison, paste0(listname1, "_from_", listname2))
+    
+    list1 = get(listname1) #This is unecessary, should be moved one layer above
+    count1 = length(list1$gene_name)
+    list2 = get(listname2)
+    count2 = length(list2$gene_name)
+    
+    current_ratio = count1/count2*100
+    ratio = c(ratio, current_ratio)
+  }
+  out_lists_counts = c(out_lists_counts, count1) #This was added to see the gene numbers in the lists
+}
+
+all_ratios = data.frame(comparison, ratio)
+usefull_ratios = all_ratios[all_ratios$ratio <= 100, ]
+write_xlsx(usefull_ratios, path = paste0("20210418_ms275sign_4wtCIs_4KOs_report/MS275_ratios.xlsx"))
+all_ratios = column_to_rownames(all_ratios, "comparison")
+
+gene_numbers = data.frame(out_lists, out_lists_counts)
+write_xlsx(gene_numbers, path = paste0("20210418_ms275sign_4wtCIs_4KOs_report/MS275_GeneCounts.xlsx"))
+gene_numbers = column_to_rownames(gene_numbers, "out_lists")
+```
+
+
+# Gene counts (general numbers and ratios)
+
+The significant genes were chosen according to whether they experience deregulation due to treatment with MS275. All significant genes are used in further downstream analysis.
+```{r general_numbers_1}
+print(paste0("Total gene number used as Input for DEseq: ", gene_numbers["ms275_vs_ctrl_all",]))
+print(paste0("Significant genes: ", gene_numbers["ms275_vs_ctrl",]))
+```
+
+
+# Heatmaps of MS275 - Ci - KO
+
+## i) Upregulated upon MS275 treatment
+
+### complete heatmap ward D clustering
+```{r gene_heatmap_up, out.height = "600px", out.width = "100%"}
+res_table_full <- create_heatmap_complete(ms275_vs_ctrl_up, 4000, "Upregulated upon MS275 treatment", "20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up.pdf")
+gene_list <- res_table_full$tree_row$labels[c(res_table_full$tree_row$order)]
+write_xlsx(as.data.frame(gene_list),
+           path = "20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up.xlsx")
+include_graphics("20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up.pdf")
+message("genes: ", length(res_table_full$tree_row$labels))
+message("Total upregulated in MS275 treatment: ", gene_numbers["ms275_vs_ctrl_up",])
+message("percentage from all deregulated genes: ", all_ratios["ms275_vs_ctrl_up_from_ms275_vs_ctrl_all",],"%")
+```
+[download Excel Table](20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_upkmeans.xlsx)
+
+### complete heatmap kmeans clustering
+```{r gene_heatmap_up_kmeans, out.height = "600px", out.width = "100%"}
+res_table_full <- create_heatmap_kmeans_complete(ms275_vs_ctrl_up, 4000, "Upregulated upon MS275 treatment", "20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up_kmeans.pdf")
+write_xlsx(rownames_to_column(as.data.frame(res_table_full), "gene_name"),
+           path = "20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up_kmeans.xlsx")
+include_graphics("20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up_kmeans.pdf")
+message("genes: ", length(rownames(res_table_full)))
+message("Total upregulated in MS275 treatment: ", gene_numbers["ms275_vs_ctrl_up",])
+message("percentage from all deregulated genes: ", all_ratios["ms275_vs_ctrl_up_from_ms275_vs_ctrl_all",],"%")
+```
+[download Excel Table](20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up_kmeans.xlsx)
+
+### complete heatmap ranked
+```{r gene_heatmap_upr, out.height = "600px", out.width = "100%"}
+res_table_full <- create_heatmap_complete(ms275_vs_ctrl_up, 4000, "Upregulated upon MS275 treatment", "20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_upr.pdf",
+                            clustered = FALSE)
+write_xlsx(rownames_to_column(as.data.frame(res_table_full), "gene_name"),
+           path = "20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_upr.xlsx")
+include_graphics("20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_upr.pdf")
+message("genes: ", length(rownames(res_table_full)))
+message("Total upregulated in MS275 treatment: ", gene_numbers["ms275_vs_ctrl_up",])
+message("percentage from all deregulated genes: ", all_ratios["ms275_vs_ctrl_up_from_ms275_vs_ctrl_all",],"%")
+```
+[download Excel Table](20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_upr.xlsx)
+
+
+### top120 clustered
+```{r gene_heatmap_up120, out.width = "60%"}
+res_table <- create_heatmap(ms275_vs_ctrl_up, 120, "Upregulated upon MS275 treatment", "20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up120.png")
+gene_list <- res_table$tree_row$labels[c(res_table$tree_row$order)]
+write_xlsx(as.data.frame(gene_list),
+           path = "20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_up120.xlsx")
+include_graphics("20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up120.png")
+message("genes: ", length(res_table$tree_row$labels))
+message("Total upregulated in MS275 treatment: ", gene_numbers["ms275_vs_ctrl_up",])
+message("percentage from all deregulated genes: ", all_ratios["ms275_vs_ctrl_up_from_ms275_vs_ctrl_all",],"%")
+```
+[download Excel Table](20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up120.xlsx)
+
+### top120 kmeans
+```{r gene_heatmap_up120_kmeans, out.width = "60%"}
+res_table <- create_heatmap_kmeans(ms275_vs_ctrl_up, 120, "Upregulated upon MS275 treatment", "20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up120_kmeans.png")
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up120_kmeans.xlsx")
+include_graphics("20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up120_kmeans.png")
+message("genes: ", length(rownames(res_table)))
+message("Total upregulated in MS275 treatment: ", gene_numbers["ms275_vs_ctrl_up",])
+message("percentage from all deregulated genes: ", all_ratios["ms275_vs_ctrl_up_from_ms275_vs_ctrl_all",],"%")
+```
+[download Excel Table](20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up120_kmeans.xlsx)
+
+### top120 ranked
+```{r gene_heatmap_up120r, out.width = "60%"}
+res_table <- create_heatmap(ms275_vs_ctrl_up, 120, "Upregulated upon MS275 treatment", "20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up120r.png",
+                            clustered = FALSE)
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up120r.xlsx")
+include_graphics("20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up120r.png")
+message("genes: ", length(rownames(res_table)))
+message("Total upregulated in MS275 treatment: ", gene_numbers["ms275_vs_ctrl_up",])
+message("percentage from all deregulated genes: ", all_ratios["ms275_vs_ctrl_up_from_ms275_vs_ctrl_all",],"%")
+```
+[download Excel Table](20210418_ms275sign_4wtCIs_4KOs_report/ms275_up/ms275_up120r.xlsx)
+
+
+### Numbers for the heatmaps above
+```{r common_numbers, message=FALSE}
+tib_all_numbers <- as_tibble(res_table_full, rownames = "gene_name", .name_repair = "universal")
+ms275_up_ci1 <- filter(tib_all_numbers, HDAC1wt.HDAC1Mut > 1)
+ms275_up_ci2 <- filter(tib_all_numbers, HDAC2wt.HDAC2Mut > 1)
+ms275_up_ci3 <- filter(tib_all_numbers, HDAC3wt.HDAC3Mut > 1)
+ms275_up_ci8 <- filter(tib_all_numbers, HDAC8wt.HDAC8Mut > 1)
+ms275_up_ko1 <- filter(tib_all_numbers, HDAC1KO > 1)
+ms275_up_ko2 <- filter(tib_all_numbers, HDAC2KO > 1)
+ms275_up_ko3 <- filter(tib_all_numbers, HDAC3KO > 1)
+ms275_up_ko8 <- filter(tib_all_numbers, HDAC8KO > 1)
+
+perc_ms275_up_ci1 <- format(nrow(ms275_up_ci1)/nrow(tib_all_numbers)*100, digits = 4)
+perc_ms275_up_ci2 <- format(nrow(ms275_up_ci2)/nrow(tib_all_numbers)*100, digits = 4)
+perc_ms275_up_ci3 <- format(nrow(ms275_up_ci3)/nrow(tib_all_numbers)*100, digits = 4)
+perc_ms275_up_ci8 <- format(nrow(ms275_up_ci8)/nrow(tib_all_numbers)*100, digits = 4)
+perc_ms275_up_ko1 <- format(nrow(ms275_up_ko1)/nrow(tib_all_numbers)*100, digits = 4)
+perc_ms275_up_ko2 <- format(nrow(ms275_up_ko2)/nrow(tib_all_numbers)*100, digits = 4)
+perc_ms275_up_ko3 <- format(nrow(ms275_up_ko3)/nrow(tib_all_numbers)*100, digits = 4)
+perc_ms275_up_ko8 <- format(nrow(ms275_up_ko8)/nrow(tib_all_numbers)*100, digits = 4)
+
+rowcount_wt <- tib_all_numbers %>% mutate(across(where(is.numeric), list(~ ifelse(. > 1, 1, 0))), .keep = "unused") %>% 
+  select(contains(c("wt", "gene_name"))) %>% rowwise() %>% mutate(sumVar = sum(c_across(starts_with("H"))))
+
+at_least1_wt <- filter(rowcount_wt, sumVar >= 1)
+at_least2_wt <- filter(rowcount_wt, sumVar >= 2)
+at_least3_wt <- filter(rowcount_wt, sumVar >= 3)
+at_least4_wt <- filter(rowcount_wt, sumVar >= 4)
+
+rowcount_ko <- tib_all_numbers %>% mutate(across(where(is.numeric), list(~ ifelse(. > 1, 1, 0))), .keep = "unused") %>% 
+  select(contains(c("KO", "gene_name"))) %>% rowwise() %>% mutate(sumVar = sum(c_across(starts_with("H"))))
+
+at_least1_ko <- filter(rowcount_ko, sumVar >= 1)
+at_least2_ko <- filter(rowcount_ko, sumVar >= 2)
+at_least3_ko <- filter(rowcount_ko, sumVar >= 3)
+at_least4_ko <- filter(rowcount_ko, sumVar >= 4)
+
+hdac1_to_2_ci <- dplyr::union(ms275_up_ci1, ms275_up_ci2)
+hdac1_to_3_ci <- dplyr::union(hdac1_to_2_ci, ms275_up_ci3)
+hdac1_to_8_ci <- dplyr::union(hdac1_to_3_ci, ms275_up_ci8)
+
+hdac1_to_2_ko <- dplyr::union(ms275_up_ko1, ms275_up_ko2)
+hdac1_to_3_ko <- dplyr::union(hdac1_to_2_ko, ms275_up_ci3)
+hdac1_to_8_ko <- dplyr::union(hdac1_to_3_ko, ms275_up_ci8)
+
+
+#write to file and output in notebook
+out_file <- file("20210418_ms275sign_4wtCIs_4KOs_report/numbers_ms275_up.txt", "w")
+
+cat("How many common genes with inhibitor ", "( totally", nrow(tib_all_numbers), "genes ) \n",
+          "HDAC1wt HDAC1Mut: ", nrow(ms275_up_ci1), perc_ms275_up_ci1, "% \n",
+          "HDAC2wt HDAC2Mut: ", nrow(ms275_up_ci2), perc_ms275_up_ci2, "% \n",
+          "HDAC3wt HDAC3Mut: ", nrow(ms275_up_ci3), perc_ms275_up_ci3, "% \n",
+          "HDAC8wt HDAC8Mut: ", nrow(ms275_up_ci8), perc_ms275_up_ci8, "% \n",
+          "HDAC1KO: ", nrow(ms275_up_ko1), perc_ms275_up_ko1, "% \n",
+          "HDAC2KO: ", nrow(ms275_up_ko2), perc_ms275_up_ko2, "% \n",
+          "HDAC3KO: ", nrow(ms275_up_ko3), perc_ms275_up_ko3, "% \n",
+          "HDAC8KO: ", nrow(ms275_up_ko8), perc_ms275_up_ko8, "% \n",
+          file = out_file)
+
+cat("\n", "rows with at least 1 common gene upregulated together with inhibitor in wt: ",
+          nrow(at_least1_wt), "\n",
+    "rows with at least 2 common gene upregulated together with inhibitor in wt: ",
+          nrow(at_least2_wt), "\n",
+    "rows with at least 3 common gene upregulated together with inhibitor in wt: ",
+          nrow(at_least3_wt), "\n",
+    "rows with at least 4 common gene upregulated together with inhibitor in wt: ",
+          nrow(at_least4_wt), "\n",
+          file = out_file, append = TRUE)
+
+cat("\n", "rows with at least 1 common gene upregulated together with inhibitor in KO: ",
+          nrow(at_least1_ko), "\n",
+    "rows with at least 2 common gene upregulated together with inhibitor in KO: ",
+          nrow(at_least2_ko), "\n",
+    "rows with at least 3 common gene upregulated together with inhibitor in KO: ",
+          nrow(at_least3_ko), "\n",
+    "rows with at least 4 common gene upregulated together with inhibitor in KO: ",
+          nrow(at_least4_ko), "\n",
+          file = out_file, append = TRUE)
+
+cat("\n", "CI HDAC1 & HDAC2 common genes upregulated with inhibitor: ",
+          nrow(hdac1_to_2_ci), "\n",
+    "CI HDAC1 & HDAC2 & HDAC3 common genes upregulated with inhibitor: ",
+          nrow(hdac1_to_3_ci), "\n",
+    "CI HDAC1 & HDAC2 & HDAC3 & HDAC8 common genes upregulated with inhibitor: ",
+          nrow(hdac1_to_8_ci), "\n",
+          file = out_file, append = TRUE)
+
+cat("\n", "KO HDAC1 & HDAC2 common genes upregulated with inhibitor: ",
+          nrow(hdac1_to_2_ko), "\n",
+    "KO HDAC1 & HDAC2 & HDAC3 common genes upregulated with inhibitor: ",
+          nrow(hdac1_to_3_ko), "\n",
+    "KO HDAC1 & HDAC2 & HDAC3 & HDAC8 common genes upregulated with inhibitor: ",
+          nrow(hdac1_to_8_ko), "\n",
+          file = out_file, append = TRUE)
+
+
+close(out_file)
+readLines("20210418_ms275sign_4wtCIs_4KOs_report/numbers_ms275_up.txt")
+```
+
+#### Common genes with MS275 for each HDAC CI/KO
+```{r barplot1}
+df1 <- data.frame(samples = c("MS275", "HDAC1wt HDAC1Mut", "HDAC2wt HDAC2Mut", "HDAC3wt HDAC3Mut",
+                             "HDAC8wt HDAC8Mut", "HDAC1KO", "HDAC2KO", "HDAC3KO", "HDAC8KO"),
+                 common_genes = c(nrow(tib_all_numbers), nrow(ms275_up_ci1), nrow(ms275_up_ci2),
+                            nrow(ms275_up_ci3), nrow(ms275_up_ci8), nrow(ms275_up_ko1),
+                            nrow(ms275_up_ko2), nrow(ms275_up_ko3), nrow(ms275_up_ko8)),
+                 sample_group = c("inhibitor", "MUT in wt", "MUT in wt", "MUT in wt", "MUT in wt",
+                                  "KO", "KO", "KO", "KO"))
+
+df1$samples <- factor(df1$samples, levels = rev(c("MS275", "HDAC1wt HDAC1Mut", "HDAC2wt HDAC2Mut",
+                                              "HDAC3wt HDAC3Mut", "HDAC8wt HDAC8Mut", "HDAC1KO",
+                                              "HDAC2KO", "HDAC3KO", "HDAC8KO")))
+
+p <- ggplot(data = df1, aes(x=samples, y=common_genes, fill=sample_group)) +
+     geom_bar(stat="identity") +
+     geom_text(aes(label=common_genes), hjust=+1.1, vjust=+0.3, size=3.5) +
+     theme_minimal() + coord_flip()
+p
+```
+
+
+#### Similar behaviour of genes across how many samples at the same time
+```{r barplot2}
+df2 <- data.frame(similar_in_at_least___samples = c("_1", "_2", "_3",
+                             "_4", "1", "2", "3", "4"),
+                 genes = c(nrow(at_least1_wt), nrow(at_least2_wt),
+                            nrow(at_least3_wt), nrow(at_least4_wt), nrow(at_least1_ko),
+                            nrow(at_least2_ko), nrow(at_least3_ko), nrow(at_least4_ko)),
+                 sample_group = c("MUT in wt", "MUT in wt", "MUT in wt", "MUT in wt",
+                                  "KO", "KO", "KO", "KO"))
+
+p <- ggplot(data = df2, aes(x=similar_in_at_least___samples, y=genes, fill=sample_group)) +
+     geom_bar(stat="identity") +
+     geom_text(aes(label=genes), vjust=+0.0, size=3.5) +
+     theme_minimal()
+p
+```
+
+#### Cummulative Common genes with MS275 for HDAC CI/KO
+```{r barplot3}
+df3 <- data.frame(unified_samples = c("MS275", "HDAC1 wt CI", "HDAC1-2 wt CI", "HDAC1-3 wt CI",
+                             "HDAC1-8 wt CI", "HDAC1 KO", "HDAC1-2 KO", "HDAC1-3 KO", "HDAC1-8 KO"),
+                 cummulated_genes = c(nrow(tib_all_numbers), nrow(ms275_up_ci1), nrow(hdac1_to_2_ci),
+                            nrow(hdac1_to_3_ci), nrow(hdac1_to_8_ci), nrow(ms275_up_ko1),
+                            nrow(hdac1_to_2_ko), nrow(hdac1_to_3_ko), nrow(hdac1_to_8_ko)),
+                 sample_group = c("inhibitor", "MUT in wt", "MUT in wt", "MUT in wt", "MUT in wt",
+                                  "KO", "KO", "KO", "KO"))
+
+df3$unified_samples <- factor(df3$unified_samples, levels = rev(c("MS275", "HDAC1 wt CI",
+                                                                  "HDAC1-2 wt CI", "HDAC1-3 wt CI",
+                             "HDAC1-8 wt CI", "HDAC1 KO", "HDAC1-2 KO", "HDAC1-3 KO", "HDAC1-8 KO")))
+
+p <- ggplot(data = df3, aes(x=unified_samples, y=cummulated_genes, fill=sample_group)) +
+     geom_bar(stat="identity") +
+     geom_text(aes(label=cummulated_genes), hjust=+1.1, vjust=+0.3, size=3.5) +
+     theme_minimal() + coord_flip()
+p
+```
+
+
+## ii) Downregulated upon MS275 treatment
+### complete heatmap ward D clustering
+```{r gene_heatmap_down, out.height = "600px", out.width = "100%"}
+res_table_full <- create_heatmap_complete(ms275_vs_ctrl_down, 4000, "downregulated upon MS275 treatment", "20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down.pdf", sort_decr = FALSE)
+gene_list <- res_table_full$tree_row$labels[c(res_table_full$tree_row$order)]
+write_xlsx(as.data.frame(gene_list),
+           path = "20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down.xlsx")
+include_graphics("20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down.pdf")
+message("genes: ", length(res_table_full$tree_row$order))
+message("Total downregulated in MS275 treatment: ", gene_numbers["ms275_vs_ctrl_down",])
+message("percentage from all deregulated genes: ", all_ratios["ms275_vs_ctrl_down_from_ms275_vs_ctrl_all",],"%")
+```
+[download Excel Table](20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down.xlsx)
+
+### complete heatmap kmeans clustering
+```{r gene_heatmap_down_kmeans, out.height = "600px", out.width = "100%"}
+res_table_full <- create_heatmap_kmeans_complete(ms275_vs_ctrl_down, 4000, "downregulated downon MS275 treatment", "20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down_kmeans.pdf", sort_decr = FALSE)
+write_xlsx(rownames_to_column(as.data.frame(res_table_full), "gene_name"),
+           path = "20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down_kmeans.xlsx")
+include_graphics("20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down_kmeans.pdf")
+message("genes: ", length(rownames(res_table_full)))
+message("Total downregulated in MS275 treatment: ", gene_numbers["ms275_vs_ctrl_down",])
+message("percentage from all deregulated genes: ", all_ratios["ms275_vs_ctrl_down_from_ms275_vs_ctrl_all",],"%")
+```
+[download Excel Table](20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down_kmeans.xlsx)
+
+### complete heatmap ranked
+```{r gene_heatmap_downr, out.height = "600px", out.width = "100%"}
+res_table_full <- create_heatmap_complete(ms275_vs_ctrl_down, 4000, "downregulated upon MS275 treatment", "20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_downr.pdf",
+                            clustered = FALSE, sort_decr = FALSE)
+write_xlsx(rownames_to_column(as.data.frame(res_table_full), "gene_name"),
+           path = "20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_downr.xlsx")
+include_graphics("20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_downr.pdf")
+message("genes: ", length(rownames(res_table_full)))
+message("Total downregulated in MS275 treatment: ", gene_numbers["ms275_vs_ctrl_down",])
+message("percentage from all deregulated genes: ", all_ratios["ms275_vs_ctrl_down_from_ms275_vs_ctrl_all",],"%")
+```
+[download Excel Table](20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_downr.xlsx)
+
+### top120 clustered
+```{r gene_heatmap_down120, out.width = "60%"}
+res_table <- create_heatmap(ms275_vs_ctrl_down, 120, "downregulated upon MS275 treatment", "20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down120.png", sort_decr = FALSE)
+gene_list <- res_table$tree_row$labels[c(res_table$tree_row$order)]
+write_xlsx(as.data.frame(gene_list),
+           path = "20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down120.xlsx")
+include_graphics("20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down120.png")
+message("genes: ", length(res_table$tree_row$order))
+message("Total downregulated in MS275 treatment: ", gene_numbers["ms275_vs_ctrl_down",])
+message("percentage from all deregulated genes: ", all_ratios["ms275_vs_ctrl_down_from_ms275_vs_ctrl_all",],"%")
+```
+[download Excel Table](20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down120.xlsx)
+
+### top120 kmeans
+```{r gene_heatmap_down120_kmeans, out.width = "60%"}
+res_table <- create_heatmap_kmeans(ms275_vs_ctrl_down, 120, "downregulated upon MS275 treatment", "20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down120_kmeans.png", clustered = FALSE, sort_decr = FALSE)
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down120_kmeans.xlsx")
+include_graphics("20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down120_kmeans.png")
+message("genes: ", length(rownames(res_table)))
+message("Total upregulated in MS275 treatment: ", gene_numbers["ms275_vs_ctrl_down",])
+message("percentage from all deregulated genes: ", all_ratios["ms275_vs_ctrl_down_from_ms275_vs_ctrl_all",],"%")
+```
+[download Excel Table](20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down120_kmeans.xlsx)
+
+### top120 ranked
+```{r gene_heatmap_down120r, out.width = "60%"}
+res_table <- create_heatmap(ms275_vs_ctrl_down, 120, "downregulated upon MS275 treatment", "20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down120r.png",
+                            clustered = FALSE, sort_decr = FALSE)
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down120r.xlsx")
+include_graphics("20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down120r.png")
+message("genes: ", length(rownames(res_table)))
+message("Total downregulated in MS275 treatment: ", gene_numbers["ms275_vs_ctrl_down",])
+message("percentage from all deregulated genes: ", all_ratios["ms275_vs_ctrl_down_from_ms275_vs_ctrl_all",],"%")
+```
+[download Excel Table](20210418_ms275sign_4wtCIs_4KOs_report/ms275_down/ms275_down120r.xlsx)
+
+### Numbers for the heatmaps above
+```{r common_numbers_down, message=FALSE}
+tib_all_numbers <- as_tibble(res_table_full, rownames = "gene_name", .name_repair = "universal")
+ms275_down_ci1 <- filter(tib_all_numbers, HDAC1wt.HDAC1Mut < -1)
+ms275_down_ci2 <- filter(tib_all_numbers, HDAC2wt.HDAC2Mut < -1)
+ms275_down_ci3 <- filter(tib_all_numbers, HDAC3wt.HDAC3Mut < -1)
+ms275_down_ci8 <- filter(tib_all_numbers, HDAC8wt.HDAC8Mut < -1)
+ms275_down_ko1 <- filter(tib_all_numbers, HDAC1KO < -1)
+ms275_down_ko2 <- filter(tib_all_numbers, HDAC2KO < -1)
+ms275_down_ko3 <- filter(tib_all_numbers, HDAC3KO < -1)
+ms275_down_ko8 <- filter(tib_all_numbers, HDAC8KO < -1)
+
+perc_ms275_down_ci1 <- format(nrow(ms275_down_ci1)/nrow(tib_all_numbers)*100, digits = 4)
+perc_ms275_down_ci2 <- format(nrow(ms275_down_ci2)/nrow(tib_all_numbers)*100, digits = 4)
+perc_ms275_down_ci3 <- format(nrow(ms275_down_ci3)/nrow(tib_all_numbers)*100, digits = 4)
+perc_ms275_down_ci8 <- format(nrow(ms275_down_ci8)/nrow(tib_all_numbers)*100, digits = 4)
+perc_ms275_down_ko1 <- format(nrow(ms275_down_ko1)/nrow(tib_all_numbers)*100, digits = 4)
+perc_ms275_down_ko2 <- format(nrow(ms275_down_ko2)/nrow(tib_all_numbers)*100, digits = 4)
+perc_ms275_down_ko3 <- format(nrow(ms275_down_ko3)/nrow(tib_all_numbers)*100, digits = 4)
+perc_ms275_down_ko8 <- format(nrow(ms275_down_ko8)/nrow(tib_all_numbers)*100, digits = 4)
+
+rowcount_wt <- tib_all_numbers %>% mutate(across(where(is.numeric), list(~ ifelse(. < -1, 1, 0))), .keep = "unused") %>% 
+  select(contains(c("wt", "gene_name"))) %>% rowwise() %>% mutate(sumVar = sum(c_across(starts_with("H"))))
+
+at_least1_wt <- filter(rowcount_wt, sumVar >= 1)
+at_least2_wt <- filter(rowcount_wt, sumVar >= 2)
+at_least3_wt <- filter(rowcount_wt, sumVar >= 3)
+at_least4_wt <- filter(rowcount_wt, sumVar >= 4)
+
+rowcount_ko <- tib_all_numbers %>% mutate(across(where(is.numeric), list(~ ifelse(. < -1, 1, 0))), .keep = "unused") %>% 
+  select(contains(c("KO", "gene_name"))) %>% rowwise() %>% mutate(sumVar = sum(c_across(starts_with("H"))))
+
+at_least1_ko <- filter(rowcount_ko, sumVar >= 1)
+at_least2_ko <- filter(rowcount_ko, sumVar >= 2)
+at_least3_ko <- filter(rowcount_ko, sumVar >= 3)
+at_least4_ko <- filter(rowcount_ko, sumVar >= 4)
+
+hdac1_to_2_ci <- dplyr::union(ms275_down_ci1, ms275_down_ci2)
+hdac1_to_3_ci <- dplyr::union(hdac1_to_2_ci, ms275_down_ci3)
+hdac1_to_8_ci <- dplyr::union(hdac1_to_3_ci, ms275_down_ci8)
+
+hdac1_to_2_ko <- dplyr::union(ms275_down_ko1, ms275_down_ko2)
+hdac1_to_3_ko <- dplyr::union(hdac1_to_2_ko, ms275_down_ci3)
+hdac1_to_8_ko <- dplyr::union(hdac1_to_3_ko, ms275_down_ci8)
+
+#write to file and output in notebook
+out_file <- file("20210418_ms275sign_4wtCIs_4KOs_report/numbers_ms275_down.txt", "w")
+
+cat("How many common genes with inhibitor ", "( totally", nrow(tib_all_numbers), "genes ) \n",
+          "HDAC1wt HDAC1Mut: ", nrow(ms275_down_ci1), perc_ms275_down_ci1, "% \n",
+          "HDAC2wt HDAC2Mut: ", nrow(ms275_down_ci2), perc_ms275_down_ci2, "% \n",
+          "HDAC3wt HDAC3Mut: ", nrow(ms275_down_ci3), perc_ms275_down_ci3, "% \n",
+          "HDAC8wt HDAC8Mut: ", nrow(ms275_down_ci8), perc_ms275_down_ci8, "% \n",
+          "HDAC1KO: ", nrow(ms275_down_ko1), perc_ms275_down_ko1, "% \n",
+          "HDAC2KO: ", nrow(ms275_down_ko2), perc_ms275_down_ko2, "% \n",
+          "HDAC3KO: ", nrow(ms275_down_ko3), perc_ms275_down_ko3, "% \n",
+          "HDAC8KO: ", nrow(ms275_down_ko8), perc_ms275_down_ko8, "% \n",
+          file = out_file)
+
+cat("\n", "rows with at least 1 common gene downregulated together with inhibitor in wt: ",
+          nrow(at_least1_wt), "\n",
+    "rows with at least 2 common gene downregulated together with inhibitor in wt: ",
+          nrow(at_least2_wt), "\n",
+    "rows with at least 3 common gene downregulated together with inhibitor in wt: ",
+          nrow(at_least3_wt), "\n",
+    "rows with at least 4 common gene downregulated together with inhibitor in wt: ",
+          nrow(at_least4_wt), "\n",
+          file = out_file, append = TRUE)
+
+cat("\n", "rows with at least 1 common gene downregulated together with inhibitor in KO: ",
+          nrow(at_least1_ko), "\n",
+    "rows with at least 2 common gene downregulated together with inhibitor in KO: ",
+          nrow(at_least2_ko), "\n",
+    "rows with at least 3 common gene downregulated together with inhibitor in KO: ",
+          nrow(at_least3_ko), "\n",
+    "rows with at least 4 common gene downregulated together with inhibitor in KO: ",
+          nrow(at_least4_ko), "\n",
+          file = out_file, append = TRUE)
+
+cat("\n", "CI HDAC1 & HDAC2 common genes downregulated with inhibitor: ",
+          nrow(hdac1_to_2_ci), "\n",
+    "CI HDAC1 & HDAC2 & HDAC3 common genes downregulated with inhibitor: ",
+          nrow(hdac1_to_3_ci), "\n",
+    "CI HDAC1 & HDAC2 & HDAC3 & HDAC8 common genes downregulated with inhibitor: ",
+          nrow(hdac1_to_8_ci), "\n",
+          file = out_file, append = TRUE)
+
+cat("\n", "KO HDAC1 & HDAC2 common genes downregulated with inhibitor: ",
+          nrow(hdac1_to_2_ko), "\n",
+    "KO HDAC1 & HDAC2 & HDAC3 common genes downregulated with inhibitor: ",
+          nrow(hdac1_to_3_ko), "\n",
+    "KO HDAC1 & HDAC2 & HDAC3 & HDAC8 common genes downregulated with inhibitor: ",
+          nrow(hdac1_to_8_ko), "\n",
+          file = out_file, append = TRUE)
+
+
+close(out_file)
+readLines("20210418_ms275sign_4wtCIs_4KOs_report/numbers_ms275_down.txt")
+```
+
+#### Common genes with MS275 for each HDAC CI/KO
+```{r barplot1_down}
+df1 <- data.frame(samples = c("MS275", "HDAC1wt HDAC1Mut", "HDAC2wt HDAC2Mut", "HDAC3wt HDAC3Mut",
+                             "HDAC8wt HDAC8Mut", "HDAC1KO", "HDAC2KO", "HDAC3KO", "HDAC8KO"),
+                 common_genes = c(nrow(tib_all_numbers), nrow(ms275_down_ci1), nrow(ms275_down_ci2),
+                            nrow(ms275_down_ci3), nrow(ms275_down_ci8), nrow(ms275_down_ko1),
+                            nrow(ms275_down_ko2), nrow(ms275_down_ko3), nrow(ms275_down_ko8)),
+                 sample_grodown = c("inhibitor", "MUT in wt", "MUT in wt", "MUT in wt", "MUT in wt",
+                                  "KO", "KO", "KO", "KO"))
+
+df1$samples <- factor(df1$samples, levels = rev(c("MS275", "HDAC1wt HDAC1Mut", "HDAC2wt HDAC2Mut",
+                                              "HDAC3wt HDAC3Mut", "HDAC8wt HDAC8Mut", "HDAC1KO",
+                                              "HDAC2KO", "HDAC3KO", "HDAC8KO")))
+
+p <- ggplot(data = df1, aes(x=samples, y=common_genes, fill=sample_grodown)) +
+     geom_bar(stat="identity") +
+     geom_text(aes(label=common_genes), hjust=+1.1, vjust=+0.3, size=3.5) +
+     theme_minimal() + coord_flip()
+p
+```
+
+
+#### Similar behaviour of genes across how many samples at the same time
+```{r barplot2_down}
+df2 <- data.frame(similar_in_at_least___samples = c("_1", "_2", "_3",
+                             "_4", "1", "2", "3", "4"),
+                 genes = c(nrow(at_least1_wt), nrow(at_least2_wt),
+                            nrow(at_least3_wt), nrow(at_least4_wt), nrow(at_least1_ko),
+                            nrow(at_least2_ko), nrow(at_least3_ko), nrow(at_least4_ko)),
+                 sample_grodown = c("MUT in wt", "MUT in wt", "MUT in wt", "MUT in wt",
+                                  "KO", "KO", "KO", "KO"))
+
+p <- ggplot(data = df2, aes(x=similar_in_at_least___samples, y=genes, fill=sample_grodown)) +
+     geom_bar(stat="identity") +
+     geom_text(aes(label=genes), vjust=+0.0, size=3.5) +
+     theme_minimal()
+p
+```
+
+#### Cummulative Common genes with MS275 for HDAC CI/KO
+```{r barplot3_down}
+df3 <- data.frame(unified_samples = c("MS275", "HDAC1 wt CI", "HDAC1-2 wt CI", "HDAC1-3 wt CI",
+                             "HDAC1-8 wt CI", "HDAC1 KO", "HDAC1-2 KO", "HDAC1-3 KO", "HDAC1-8 KO"),
+                 cummulated_genes = c(nrow(tib_all_numbers), nrow(ms275_down_ci1), nrow(hdac1_to_2_ci),
+                            nrow(hdac1_to_3_ci), nrow(hdac1_to_8_ci), nrow(ms275_down_ko1),
+                            nrow(hdac1_to_2_ko), nrow(hdac1_to_3_ko), nrow(hdac1_to_8_ko)),
+                 sample_grodown = c("inhibitor", "MUT in wt", "MUT in wt", "MUT in wt", "MUT in wt",
+                                  "KO", "KO", "KO", "KO"))
+
+df3$unified_samples <- factor(df3$unified_samples, levels = rev(c("MS275", "HDAC1 wt CI",
+                                                                  "HDAC1-2 wt CI", "HDAC1-3 wt CI",
+                             "HDAC1-8 wt CI", "HDAC1 KO", "HDAC1-2 KO", "HDAC1-3 KO", "HDAC1-8 KO")))
+
+p <- ggplot(data = df3, aes(x=unified_samples, y=cummulated_genes, fill=sample_grodown)) +
+     geom_bar(stat="identity") +
+     geom_text(aes(label=cummulated_genes), hjust=+1.1, vjust=+0.3, size=3.5) +
+     theme_minimal() + coord_flip()
+p
+```
+
+# R status
+```{r}
+sessionInfo()
+```

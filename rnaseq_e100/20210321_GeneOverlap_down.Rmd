@@ -1,0 +1,245 @@
+---
+title: "Calculation of gene set overlaps and show as Heatmap (Upregulated genes)"
+author: "Adrian Arnel Lauber"
+date: "18.03.2021"
+output:
+  html_document: 
+    theme: cerulean
+    highlight: monochrome
+    toc: yes
+    toc_float: yes
+  word_document:
+    toc: yes
+  pdf_document: 
+    toc: yes
+  html_notebook: 
+    toc: yes
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      include = TRUE,
+                      warning=FALSE,
+                      message=TRUE,
+                      fig.align = 'center')
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+## Load libraries
+readxl is only required if xlsx is input format
+```{r imports}
+library("tidyverse")
+library("GeneOverlap")
+library("readxl")
+```
+
+## Read tables with significant gene symbols for wt background
+
+```{r data_import}
+ms275_3uM_in <- read_csv("20210318_inhibitor_all/symb_list/group_wt_MS275_3uM_24h_vs_wt_native_down.csv")
+ms275_1uM_in <- read_csv("20210318_inhibitor_all/symb_list/group_wt_MS275_1uM_24h_vs_wt_native_down.csv")
+jq12_in <- read_csv("20210318_inhibitor_all/symb_list/group_wt_JQ12_1uM_24h_vs_wt_native_down.csv")
+hdac1_141_in <- read_csv("20210318_inhibitor_all/symb_list/group_wt_inactive_HDAC1_vs_wt_native_down.csv")
+hdac2_142_in <- read_csv("20210318_inhibitor_all/symb_list/group_wt_inactive_HDAC2_vs_wt_native_down.csv")
+hdac3_135_in <- read_csv("20210318_inhibitor_all/symb_list/group_wt_inactive_HDAC3_vs_wt_native_down.csv")
+hdac8_143_in <- read_csv("20210318_inhibitor_all/symb_list/group_wt_inactive_HDAC8_vs_wt_native_down.csv")
+hdac1_ko_in <- read_csv("20210318_inhibitor_all/symb_list/group_HDAC1ko_native_vs_wt_native_down.csv")
+hdac2_ko_in <- read_csv("20210318_inhibitor_all/symb_list/group_HDAC2ko_native_vs_wt_native_down.csv")
+hdac3_ko_in <- read_csv("20210318_inhibitor_all/symb_list/group_HDAC3ko_native_vs_wt_native_down.csv")
+hdac8_ko_in <- read_csv("20210318_inhibitor_all/symb_list/group_HDAC8ko_native_vs_wt_native_down.csv")
+```
+
+## convert to vectors with gene symbols only, for wt background
+
+```{r convert_wt}
+ms275_3uM <- pull(ms275_3uM_in, "act_contr_ordered_sig$gene_name")
+ms275_1uM <- pull(ms275_1uM_in, "act_contr_ordered_sig$gene_name")
+jq12 <- pull(jq12_in, "act_contr_ordered_sig$gene_name")
+hdac1_141 <- pull(hdac1_141_in, "act_contr_ordered_sig$gene_name")
+hdac2_142 <- pull(hdac2_142_in, "act_contr_ordered_sig$gene_name")
+hdac3_135 <- pull(hdac3_135_in, "act_contr_ordered_sig$gene_name")
+hdac8_143 <- pull(hdac8_143_in, "act_contr_ordered_sig$gene_name")
+hdac1_ko <- pull(hdac1_ko_in, "act_contr_ordered_sig$gene_name")
+hdac2_ko <- pull(hdac2_ko_in, "act_contr_ordered_sig$gene_name")
+hdac3_ko <- pull(hdac3_ko_in, "act_contr_ordered_sig$gene_name")
+hdac8_ko <- pull(hdac8_ko_in, "act_contr_ordered_sig$gene_name")
+```
+
+## Read tables with significant gene symbols for KO background
+
+```{r data_import_ko}
+ms275_3uM_in <- read_csv("20210318_inhibitor_all/symb_list/group_wt_MS275_3uM_24h_vs_wt_native_down.csv")
+ms275_1uM_in <- read_csv("20210318_inhibitor_all/symb_list/group_wt_MS275_1uM_24h_vs_wt_native_down.csv")
+jq12_in <- read_csv("20210318_inhibitor_all/symb_list/group_wt_JQ12_1uM_24h_vs_wt_native_down.csv")
+hdac1_ko_141_in <- read_csv("20210318_inhibitor_all/symb_list/group_HDAC1ko_inactive_vs_wt_native_down.csv")
+hdac2_ko_142_in <- read_csv("20210318_inhibitor_all/symb_list/group_HDAC2ko_inactive_vs_wt_native_down.csv")
+hdac3_ko_135_in <- read_csv("20210318_inhibitor_all/symb_list/group_HDAC3ko_inactive_vs_wt_native_down.csv")
+hdac8_ko_143_in <- read_csv("20210318_inhibitor_all/symb_list/group_HDAC8ko_inactive_vs_wt_native_down.csv")
+hdac1_ko_in <- read_csv("20210318_inhibitor_all/symb_list/group_HDAC1ko_native_vs_wt_native_down.csv")
+hdac2_ko_in <- read_csv("20210318_inhibitor_all/symb_list/group_HDAC2ko_native_vs_wt_native_down.csv")
+hdac3_ko_in <- read_csv("20210318_inhibitor_all/symb_list/group_HDAC3ko_native_vs_wt_native_down.csv")
+hdac8_ko_in <- read_csv("20210318_inhibitor_all/symb_list/group_HDAC8ko_native_vs_wt_native_down.csv")
+```
+
+## convert to vectors with gene symbols only, for KO background
+
+```{r convert_ko}
+ms275_3uM <- pull(ms275_3uM_in, "act_contr_ordered_sig$gene_name")
+ms275_1uM <- pull(ms275_1uM_in, "act_contr_ordered_sig$gene_name")
+jq12 <- pull(jq12_in, "act_contr_ordered_sig$gene_name")
+hdac1_ko_141 <- pull(hdac1_ko_141_in, "act_contr_ordered_sig$gene_name")
+hdac2_ko_142 <- pull(hdac2_ko_142_in, "act_contr_ordered_sig$gene_name")
+hdac3_ko_135 <- pull(hdac3_ko_135_in, "act_contr_ordered_sig$gene_name")
+hdac8_ko_143 <- pull(hdac8_ko_143_in, "act_contr_ordered_sig$gene_name")
+hdac1_ko <- pull(hdac1_ko_in, "act_contr_ordered_sig$gene_name")
+hdac2_ko <- pull(hdac2_ko_in, "act_contr_ordered_sig$gene_name")
+hdac3_ko <- pull(hdac3_ko_in, "act_contr_ordered_sig$gene_name")
+hdac8_ko <- pull(hdac8_ko_in, "act_contr_ordered_sig$gene_name")
+```
+
+
+## Create list of vectors and specify gene universe size
+
+```{r gene_set_lists}
+gene_sets <- list("MS275 3µM" = ms275_3uM,
+                  "MS275 1µM" = ms275_1uM,
+                  "JQ12" = jq12,
+                  "HDAC1wt HDAC1Mut" = hdac1_141,
+                  "HDAC2wt HDAC2Mut" = hdac2_142,
+                  "HDAC3wt HDAC3Mut" = hdac3_135,
+                  "HDAC8wt HDAC8Mut" = hdac8_143,
+                  "HDAC1KO" = hdac1_ko,
+                  "HDAC2KO" = hdac2_ko,
+                  "HDAC3KO" = hdac3_ko,
+                  "HDAC8KO" = hdac8_ko)
+
+gene_sets_ko <- list("MS275 3µM" = ms275_3uM,
+                     "MS275 1µM" = ms275_1uM,
+                     "JQ12" = jq12,
+                     "HDAC1KO HDAC1Mut" = hdac1_141,
+                     "HDAC2KO HDAC2Mut" = hdac2_142,
+                     "HDAC3KO HDAC3Mut" = hdac3_135,
+                     "HDAC8KO HDAC8Mut" = hdac8_143,
+                     "HDAC1KO" = hdac1_ko,
+                     "HDAC2KO" = hdac2_ko,
+                     "HDAC3KO" = hdac3_ko,
+                     "HDAC8KO" = hdac8_ko)
+
+gene_universe <- read_csv("20210318_inhibitor_all/inhibitor_wo_group_results.csv", col_names = TRUE)
+gene_universe <- dplyr::rename(gene_universe, gene_id = X1)
+
+#significant <- gene_universe %>% filter(padj<0.1) %>% select(gene_id)
+significant <- gene_universe %>% select(gene_id)
+number_sign <- nrow(significant)
+```
+
+## Create geneOverlapMatrix object
+First create the geneOverlapMatrix object. 
+
+```{r geneOverlapMatrix_object}
+gom.obj <- newGOM(gene_sets, genome.size = number_sign)
+gom.obj.ko <- newGOM(gene_sets_ko, genome.size = number_sign)
+```
+
+## Visualization
+Then produce the visualizations
+
+```{r visualize, fig.width=12, fig.height=12}
+png("20210318_inhibitor_all/list_overlaps/geneOverlapMatrix_wt_odds_down.png", width = 1000, height = 800)
+drawHeatmap(gom.obj, what = "odds.ratio", grid.col = "Blues", note.col = "black", adj.p = TRUE, log.scale = TRUE, cutoff = 0.001)
+dev.off()
+
+
+png("20210318_inhibitor_all/list_overlaps/geneOverlapMatrix_ko_odds_down.png", width = 1000, height = 800)
+drawHeatmap(gom.obj.ko, what = "odds.ratio", grid.col = "Blues", note.col = "black", adj.p = TRUE, log.scale = TRUE, cutoff = 0.001)
+dev.off()
+
+
+
+png("20210318_inhibitor_all/list_overlaps/geneOverlapMatrix_wt_jaccard_down.png", width = 1000, height = 800)
+drawHeatmap(gom.obj, what = "Jaccard", grid.col = "Blues", note.col = "black", adj.p = TRUE, log.scale = TRUE, cutoff = 0.001)
+dev.off()
+
+
+png("20210318_inhibitor_all/list_overlaps/geneOverlapMatrix_ko_jaccard_down.png", width = 1000, height = 800)
+drawHeatmap(gom.obj.ko, what = "Jaccard", grid.col = "Blues", note.col = "black", adj.p = TRUE, log.scale = TRUE, cutoff = 0.001)
+dev.off()
+
+
+#set transparent color for matrices without p-value texts
+transparent <- rgb(0, 0, 255, max = 255, alpha = 0, names = "blue50")
+
+png("20210318_inhibitor_all/list_overlaps/geneOverlapMatrix_wt_odds_down_nopvalue.png", width = 1000, height = 800)
+drawHeatmap(gom.obj, what = "odds.ratio", grid.col = "Blues", note.col = "transparent", adj.p = TRUE, log.scale = TRUE, cutoff = 0.001)
+dev.off()
+
+
+png("20210318_inhibitor_all/list_overlaps/geneOverlapMatrix_ko_odds_down_nopvalue.png", width = 1000, height = 800)
+drawHeatmap(gom.obj.ko, what = "odds.ratio", grid.col = "Blues", note.col = "transparent", adj.p = TRUE, log.scale = TRUE, cutoff = 0.001)
+dev.off()
+
+
+
+png("20210318_inhibitor_all/list_overlaps/geneOverlapMatrix_wt_jaccard_down_nopvalue.png", width = 1000, height = 800)
+drawHeatmap(gom.obj, what = "Jaccard", grid.col = "Blues", note.col = "transparent", adj.p = TRUE, log.scale = TRUE, cutoff = 0.001)
+dev.off()
+
+
+png("20210318_inhibitor_all/list_overlaps/geneOverlapMatrix_ko_jaccard_down_nopvalue.png", width = 1000, height = 800)
+drawHeatmap(gom.obj.ko, what = "Jaccard", grid.col = "Blues", note.col = "transparent", adj.p = TRUE, log.scale = TRUE, cutoff = 0.001)
+dev.off()
+```
+
+## Explore some overlap sets manually to retrive interesting lists
+
+```{r explore}
+hdac1_hdac8_list <- getIntersection(gom.obj["hdac1_ko", "hdac8_ko"])
+hdac1_hdac8_143_list <- getIntersection(gom.obj.ko["hdac8_ko_143", "hdac1_ko"])
+write(hdac1_hdac8_list, file = "20210318_inhibitor_all/overlap_list/hdac1KO_hdac8KO_common_down.txt")
+write(hdac1_hdac8_143_list, file = "20210318_inhibitor_all/overlap_list/hdac1KO_hdac8KO_143_common_down.txt")
+
+```
+
+## Get overlap of 2 specific sets and add to it the Foldchanges to compare manually
+
+```{r add_Log2Foldchanges}
+hdac1_hdac8_list <- getIntersection(gom.obj["hdac1_ko", "hdac8_ko"])
+tibble_hdac1_ko_hdac8_ko <- as_tibble(hdac1_hdac8_list)
+tibble_hdac1_ko_hdac8_ko <- rename(tibble_hdac1_ko_hdac8_ko, gene_name = value)
+
+tibble_hdac1_ko_full <- read_csv("20210318_inhibitor_all/group_HDAC1ko_native_vs_wt_native.csv")
+tibble_hdac1_ko_full <- rename(tibble_hdac1_ko_full, gene_id = X1)
+tibble_hdac8_ko_full <- read_csv("20210318_inhibitor_all/group_HDAC8ko_native_vs_wt_native.csv")
+tibble_hdac8_ko_full <- rename(tibble_hdac8_ko_full, gene_id = X1)
+
+hdac1_ko_hdac8_ko_comb_hdac1 <- inner_join(tibble_hdac1_ko_hdac8_ko, tibble_hdac1_ko_full)
+write_tsv(hdac1_ko_hdac8_ko_comb_hdac1, file = "20210318_inhibitor_all/overlap_list/HDAC1KO_HDAC8KO_common_down_log2Foldchanges_HDAC1.tsv")
+
+hdac1_ko_hdac8_ko_comb_hdac8 <- inner_join(tibble_hdac1_ko_hdac8_ko, tibble_hdac8_ko_full)
+write_tsv(hdac1_ko_hdac8_ko_comb_hdac8, file = "20210318_inhibitor_all/overlap_list/HDAC1KO_HDAC8KO_common_down_log2Foldchanges_HDAC8.tsv")
+
+
+
+tibble_hdac1_ko_hdac8_ko_143 <- as_tibble(hdac1_hdac8_143_list)
+tibble_hdac1_ko_hdac8_ko_143 <- rename(tibble_hdac1_ko_hdac8_ko_143, gene_name = value)
+
+tibble_hdac1_ko_full <- read_csv("20210318_inhibitor_all/group_HDAC1ko_native_vs_wt_native.csv")
+tibble_hdac1_ko_full <- rename(tibble_hdac1_ko_full, gene_id = X1)
+tibble_hdac8_ko_143_full <- read_csv("20210318_inhibitor_all/group_HDAC8ko_inactive_vs_wt_native.csv")
+tibble_hdac8_ko_143_full <- rename(tibble_hdac8_ko_143_full, gene_id = X1)
+
+hdac1_ko_hdac8_ko_143_comb_hdac1 <- inner_join(tibble_hdac1_ko_hdac8_ko_143, tibble_hdac1_ko_full)
+write_tsv(hdac1_ko_hdac8_ko_143_comb_hdac1, file = "20210318_inhibitor_all/overlap_list/HDAC1KO_HDAC8KO_143_common_down_log2Foldchanges_HDAC1.tsv")
+
+hdac1_ko_hdac8_ko_143_comb_hdac8 <- inner_join(tibble_hdac1_ko_hdac8_ko_143, tibble_hdac8_ko_143_full)
+write_tsv(hdac1_ko_hdac8_ko_143_comb_hdac8, file = "20210318_inhibitor_all/overlap_list/HDAC1KO_HDAC8KO_143_common_down_log2Foldchanges_HDAC8.tsv")
+```
+
+```{r session_info}
+sessionInfo()
+```

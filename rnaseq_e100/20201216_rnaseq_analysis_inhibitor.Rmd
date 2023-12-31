@@ -1,0 +1,285 @@
+---
+title: "HAP FFG RNA-seq data analysis"
+author: "Adrian Arnel Lauber"
+date: "16.12.2020"
+output:
+  html_document: 
+    theme: cerulean
+    highlight: monochrome
+    toc: true
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      include = TRUE,
+                      fig.align = 'center')
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+Click the **Knit** button to generate a document that includes both content as well as the output of any embedded R code chunks within the document.
+
+## Load libraries
+
+```{r imports}
+library("tidyverse")
+library("DESeq2")
+library("pheatmap")
+```
+
+## Read raw count matrix and coldata + extract metadata
+The "inhibitor_counts_raw.tsv" includes all samples which were used in the finale analysis. The samples of HDAC3 which were not True Knock-outs are not in this table anymore and HDAC3 Knock-in with the mutant Transgene is included.
+I was not sure whether the samples with the wt HDAC TG in KO background is still in the table, that's why I excluded it here.
+Since the countmatrix input for DESeq needs only the gene_id and the raw counts, the columns with additional information is extracted (featureData) and passed below to the DESeqDataSet object into mcols.
+
+The specific sample information with factors is extracted from the "..._samples.tsv", unnecessary columns are dropped.
+
+```{r countmatrix}
+cts_full <- read_tsv("rnaseq_deseq_inhibitor_counts_raw.tsv")
+cts <- cts_full %>% select(gene_id, starts_with("H") & !contains("_wt_")) %>% column_to_rownames("gene_id")
+cts_matrix <- as.matrix(cts)
+
+coldata <- read.csv("rnaseq_deseq_inhibitor_samples.tsv", sep="\t", row.names=11, colClasses=c("NULL", "NULL", NA, NA, "NULL", NA, NA, NA, NA, "NULL", NA, "NULL", NA, NA, NA), stringsAsFactors = TRUE)
+
+featureData <- cts_full %>% select(gene_version:location)
+
+```
+
+Difference between sample data and count matrix samples?
+Then remove these rows and check whether sample columns and rows fit
+
+```{r difference}
+ctsc <- colnames(cts_matrix)
+coldatac <- rownames(coldata)
+(setdiff(coldatac, ctsc))
+
+coldata <- coldata[!(row.names(coldata) %in% setdiff(rownames(coldata),ctsc)), ]
+(all(rownames(coldata) == colnames(cts)))
+```
+
+## Create dds object + add metadata
+As soon as the sample data from coldata matches the samples from the count Matrix, the dds Object can be initialized and our Metadata (featureData) can also be added so we can have everything in the dds object
+
+```{r dds_object}
+dds <- DESeqDataSetFromMatrix(countData = cts_matrix,
+                              colData = coldata,
+                              design = ~ group)
+
+mcols(dds) <- DataFrame(mcols(dds), featureData)
+```
+
+## relevel factors to set the reference
+
+```{r relevel}
+#dds$expression <- relevel(dds$expression, ref = "native")
+#dds$genotype <- relevel(dds$genotype, ref = "wt")
+dds$group <- relevel(dds$group, ref = "wt_native")
+dds$type <- relevel(dds$type, ref = "wt")
+```
+
+## add group factor for usage in design formula (only run if not already in design!)
+Don't run this anymore. There is 1 mistake in 1 sample which I couldn't figure out, so I just took the defined groups from Michael Schuster. If this is used again, the Factors above might have to be treated differently.
+
+```{r group_factor, eval = FALSE}
+#dds$group <- factor(paste0(dds$genotype, "_", dds$expression))
+#design(dds) <- ~ group
+#dds$group <- relevel(dds$group, ref = "wt_native")
+```
+
+## Pre-filter the low raw count rows
+Here we can define the threshold for the sum of raw counts per row, so that rows (=genes) with a generally low count can be dropped. This threshold can also depend on the number of samples!
+
+```{r prefilter}
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+```
+
+## make a copy of standard DESeq (wald) dds object for lrt
+The lrt analysis can be used to make a statistical analysis over all samples instead just pairwise comparisons.
+
+```{r copy_for_lrt}
+dds_lrt <- dds
+```
+
+## Deseq with LRT
+
+```{r deseq_lrt}
+dds_lrt <- DESeq(dds_lrt, test="LRT", reduced=~1)
+res_lrt <- results(dds_lrt)
+```
+
+## Adding gene names to lrt test results of DEseq
+
+```{r add_gene_names_lrt}
+res_lrt$symbol <- mcols(dds_lrt)$gene_name
+```
+
+## Analyse and export results (lrt)
+
+```{r results_lrt}
+
+res_lrt_sig <- subset(res_lrt, padj < 0.1)
+write.csv(as.data.frame(res_lrt), 
+          file="20201216/cut10/inhibitor_wo_group_results.csv")
+write.csv(as.data.frame(res_lrt_sig), 
+          file="20201216/cut10/inhibitor_wo_group_results_significant.csv")
+```
+
+
+## Deseq standard (wald test)
+
+```{r deseq_wald}
+dds <- DESeq(dds)
+res <- results(dds)
+```
+
+## Adding gene names
+
+```{r add_gene_names}
+res$gene_name <- mcols(dds)$gene_name
+```
+
+## Create results object with LFCTrheshold
+Not the same as choosing from the finals res object all genes with LFC > 1 since this is a statistical test which is applied to all genes which have LFC > 1 and report significance only of those.
+```{r LFCThreshold}
+resLFC1 <- results(dds, lfcThreshold = 1)
+```
+
+## Quality and outlier control
+Here just MA plots to look at the distribution. Scipen Option will stop R to write the numbers on the X-Axis in scientific notation.
+
+```{r deseq_control}
+summary(res)
+options(scipen = 5)
+
+plotMA(res, ylim = c(-10,10), main = "group wt MS275 3uM 24h vs wt native \n rowsum > 10: 30405 genes")
+
+plotMA(resLFC1, ylim = c(-10,10), main = "group wt MS275 3uM 24h vs wt native \n rowsum > 10: 30405 genes, LFC > 1")
+topGene <- rownames(resLFC1)[which.min(resLFC1$padj)]
+with(resLFC1[topGene, ], {
+  points(baseMean, log2FoldChange, col = "red", cex = 2, lwd = 2)
+  text(baseMean, log2FoldChange, topGene, pos = 2, col = "red")
+})
+
+options(scipen = 0)
+```
+
+## Analyse and export results (standard wald test)
+padj was defined 2x since I looked at the total genes and the ordered MS275 list seperately... This is not clear...
+
+```{r results_wald}
+res_sig <- subset(res, padj < 0.1)
+
+MS275_3uM_ordered <- res_sig[order(res_sig$log2FoldChange),]
+MS275_3uM_Ordered_sig <- subset(MS275_3uM_ordered, padj < 0.1)
+write.csv(as.data.frame(MS275_3uM_Ordered_sig), 
+          file="20201216/cut10/group_wt_MS275_3uM_24h_vs_wt_native.csv")
+
+jq12 <- results(dds, contrast=c("group", "wt_JQ12_1uM_24h", "wt_native"))
+jq12_ordered <- jq12[order(jq12$log2FoldChange),]
+jq12_ordered_sig <- subset(jq12_ordered, padj < 0.1)
+write.csv(as.data.frame(jq12_ordered_sig), 
+          file="20201216/cut10/group_wt_JQ12_1uM_24h_vs_wt_native.csv")
+
+```
+
+## export all contrasts versus wt_native
+
+```{r export_contrasts}
+all_contr <- resultsNames(dds)
+
+for (val in all_contr)
+{
+if(is.character(val) == TRUE) 
+  act_contr <- results(dds, name=val)
+  act_contr$gene_name <- mcols(dds)$gene_name
+  act_contr_ordered <- act_contr[order(act_contr$log2FoldChange),]
+  act_contr_ordered_sig <- subset(act_contr_ordered, padj < 0.1)
+  write.csv(as.data.frame(act_contr_ordered_sig), 
+          file=paste0("20201216/cut10/", val, ".csv"))
+}
+
+```
+
+## create gene symbol lists for further analysis of gene set overlaps
+The contrasts which compare the genes to the wt_native are extracted from "results" and ordered according to the fold change. Then only significant genes with an adjusted p-value of < 0.1 and a log2FoldChange bigger than 1  are chosen. First upregulated genes and then in second loop downregulated genes.
+
+```{r comparison_lists}
+all_contr <- resultsNames(dds)
+
+for (val in all_contr)
+{
+if(is.character(val) == TRUE) 
+  act_contr <- results(dds, name=val)
+  act_contr$gene_name <- mcols(dds)$gene_name
+  act_contr_ordered <- act_contr[order(act_contr$log2FoldChange, decreasing=TRUE),]
+  act_contr_ordered_sig <- subset(act_contr_ordered, padj < 0.1 & log2FoldChange > 1)
+  write.csv(as.data.frame(act_contr_ordered_sig$gene_name), 
+          file=paste0("20201216/cut10/symb_list/", val, "_up.csv"), row.names = FALSE)
+}
+
+for (val in all_contr)
+{
+if(is.character(val) == TRUE) 
+  act_contr <- results(dds, name=val)
+  act_contr$gene_name <- mcols(dds)$gene_name
+  act_contr_ordered <- act_contr[order(act_contr$log2FoldChange, decreasing=TRUE),]
+  act_contr_ordered_sig <- subset(act_contr_ordered, padj < 0.1 & log2FoldChange < -1)
+  write.csv(as.data.frame(act_contr_ordered_sig$gene_name), 
+          file=paste0("20201216/cut10/symb_list/", val, "_down.csv"), row.names = FALSE)
+}
+```
+
+
+## TODO: This part is for extraction of HDACs and plot to see change of isoforms in cell lines
+This part is still ongoing, datasets have to be swapped
+
+```{r expression_levels_groups}
+data1 <- plotCounts(dds, "ENSG00000116478",
+                   intgroup = c("type", "cell"), returnData = TRUE)
+data1 <- data1 %>% mutate(cell = replace_na(cell, "HDAC1")) %>% filter(type != "wt_jq12") %>% filter(!str_detect(type, "^wt_ms275"))
+ggplot(data1, aes(x=type, y=count, color = cell, group = cell)) +
+  geom_point() + stat_smooth(se = FALSE, method = "loess") + scale_y_log10()
+
+data2 <- plotCounts(dds, "ENSG00000196591",
+                   intgroup = c("type", "cell"), returnData = TRUE)
+data2 <- data2 %>% mutate(cell = replace_na(cell, "HDAC2")) %>% filter(type != "wt_jq12") %>% filter(!str_detect(type, "^wt_ms275"))
+ggplot(data2, aes(x=type, y=count, color = cell, group = cell)) +
+  geom_point() + stat_smooth(se = FALSE, method = "loess") + scale_y_log10()
+
+data3 <- plotCounts(dds, "ENSG00000171720",
+                   intgroup = c("type", "cell"), returnData = TRUE)
+data3 <- data3 %>% mutate(cell = replace_na(cell, "HDAC3")) %>% filter(type != "wt_jq12") %>% filter(!str_detect(type, "^wt_ms275"))
+ggplot(data3, aes(x=type, y=count, color = cell, group = cell)) +
+  geom_point() + stat_smooth(se = FALSE, method = "loess") + scale_y_log10()
+
+data8 <- plotCounts(dds, "ENSG00000147099",
+                   intgroup = c("type", "cell"), returnData = TRUE)
+data8 <- data8 %>% mutate(cell = replace_na(cell, "HDAC8")) %>% filter(type != "wt_jq12") %>% filter(!str_detect(type, "^wt_ms275"))
+ggplot(data8, aes(x=type, y=count, color = cell, group = cell)) +
+  geom_point() + stat_smooth(se = FALSE, method = "loess") + scale_y_log10()
+
+```
+
+## Create Heatmap of genes for comparison of changes
+Test heatmap for overview. With some improvements this could be also used...
+```{r gene_heatmap}
+betas <- coef(dds_lrt)
+(colnames(betas))
+
+topGenes <- head(order(res_lrt$padj), 140)
+mat <- betas[topGenes, -c(1,2)]
+thr <- 3
+mat[mat < -thr] <- -thr
+mat[mat > thr] <- thr
+pheatmap(mat, breaks = seq(from=-thr, to=thr, length=101), cluster_col = FALSE)
+```
+
+```{r session_info}
+sessionInfo()
+```
+

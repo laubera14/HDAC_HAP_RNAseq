@@ -1,0 +1,1175 @@
+---
+title: 'HAP FFG RNA-seq: LRT-version of HDAC1 Heatmaps KO rel. ctrl and dynamic deregulation after
+  introduction of TGs rel. KO update to transcriptome hg38_e100'
+author: "Adrian Arnel Lauber"
+date: "28.03.2021"
+output:
+  html_document: 
+    theme: cerulean
+    highlight: monochrome
+    toc: yes
+    toc_float: yes
+  word_document:
+    toc: yes
+  pdf_document: 
+    toc: yes
+  html_notebook: 
+    toc: yes
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      include = TRUE,
+                      warning=FALSE,
+                      message=TRUE,
+                      fig.align = 'center')
+```
+
+# Background & Summary
+Genes are sorted into 3 Groups: i) Reintroduction of wt HDAC1 rescues the KO deregulation of the gene, the catalytically inactive HDAC1 (Mut) does the same. ii) Rescue through wt HDAC1, but ci HDAC1 has no effect on gene regulation. iii) The wt HDAC1 rescues gene regulation, but opposite to the wt HDAC1, the ci HDAC1 leads to higher deregulation (dominant negative effect). This group contains also lists, which show all genes that are deregulated by introdcution of the ci HDAC1, independet of the deregulation in the KO.
+
+## Performed steps for DEseq2
+* Load R libraries:
+
+```{r imports, message=FALSE}
+library("tidyverse")
+library("DESeq2")
+library("pheatmap")
+library("writexl")
+library("knitr")
+```
+
+```{r parallelization}
+platform <- Sys.info()["sysname"]
+
+if (platform == "Linux") {
+  library("BiocParallel")
+  register(MulticoreParam(2))
+}
+```
+
+```{r functions}
+# 1st function is the standard heatmap for KO background
+create_heatmap <- function(inp_list, n_genes, title, out_file, sort_decr = TRUE, clustered = TRUE, numbers = FALSE) {
+
+  betas <- coef(dds)
+
+  betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(inp_list))), ]
+  betas_sig <- betas_sig[match(rownames(inp_list), row.names(betas_sig)),]
+
+  betas_sig_tbl <- as_tibble(betas_sig, rownames = NA) %>% rownames_to_column(var = "rnames")
+  betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_active_vs_HDAC1ko_native
+                      = group_HDAC1ko_active_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+  betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_inactive_vs_HDAC1ko_native
+                      = group_HDAC1ko_inactive_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+  betas_sig_tbl <- column_to_rownames(betas_sig_tbl, var = "rnames")
+  betas_sig <- as.matrix(betas_sig_tbl)
+
+
+  betascols <- c("intercept", "HDAC1KO HDAC1wt vs ctrl", "HDAC1KO HDAC1Mut vs ctrl", "HDAC1KO vs ctrl", "HDAC1KO HDAC1wt",
+                 "HDAC1KO HDAC1Mut")
+  attr(betas_sig, "dimnames") <- list(inp_list$gene_name, betascols)
+
+  topGenes <- head(order(inp_list$log2FoldChange, decreasing = sort_decr), n_genes)
+  mat <- betas_sig[topGenes, -1]
+  
+  thr <- 3
+  colramp <- seq(from=-thr, to=thr, length=101)
+  if (numbers == TRUE){
+    thr <- 21
+    colramp <- seq(from=-thr+12, to=thr-12, length=101)
+  }
+  
+  mat[mat < -thr] <- -thr
+  mat[mat > thr] <- thr
+
+  col.order <- c("HDAC1KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut")
+  mat <- mat[,col.order]
+
+  pheatmap(mat, breaks = colramp, cluster_col = FALSE, cluster_row = clustered, #set treeheight_row = 0 to mask
+           fontsize_col = 15, angle_col = 90, main = title, display_numbers = numbers,
+           cellheight = 12, gaps_col = 1, clustering_method = "complete",
+           cellwidth = 50, legend = FALSE, fontsize = 10, fontsize_row = 10,
+           filename = out_file, scale = "none")
+  
+  return(betas_sig)
+}
+
+
+#2nd Heatmap is the one from KO background, but it also has inhibitor effects annotated at the left site.
+create_heatmap_inh <- function(inp_list, n_genes, title, out_file, sort_decr = TRUE, clustered = TRUE, numbers = FALSE) {
+
+  betas <- coef(dds)
+
+  betas_sig <- betas[!(row.names(betas) %in% setdiff(rownames(betas), rownames(inp_list))), ]
+  betas_sig <- betas_sig[match(rownames(inp_list), row.names(betas_sig)),]
+
+  betas_sig_tbl <- as_tibble(betas_sig, rownames = NA) %>% rownames_to_column(var = "rnames")
+  betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_active_vs_HDAC1ko_native
+                      = group_HDAC1ko_active_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+  betas_sig_tbl <- mutate(betas_sig_tbl, group_HDAC1ko_inactive_vs_HDAC1ko_native
+                      = group_HDAC1ko_inactive_vs_wt_native - group_HDAC1ko_native_vs_wt_native)
+  betas_sig_tbl <- column_to_rownames(betas_sig_tbl, var = "rnames")
+  betas_sig <- as.matrix(betas_sig_tbl)
+
+
+  betascols <- c("intercept", "HDAC1KO HDAC1wt vs ctrl", "HDAC1KO HDAC1Mut vs ctrl", "HDAC1KO vs ctrl", "HDAC1KO HDAC1wt",
+                 "HDAC1KO HDAC1Mut")
+  attr(betas_sig, "dimnames") <- list(inp_list$gene_name, betascols)
+
+  topGenes <- head(order(inp_list$log2FoldChange, decreasing = sort_decr), n_genes)
+  mat <- betas_sig[topGenes, -1]
+  
+  thr <- 3
+  colramp <- seq(from=-thr, to=thr, length=101)
+  if (numbers == TRUE){
+    thr <- 21
+    colramp <- seq(from=-thr+12, to=thr-12, length=101)
+  }
+  
+  mat[mat < -thr] <- -thr
+  mat[mat > thr] <- thr
+
+  col.order <- c("HDAC1KO vs ctrl", "HDAC1KO HDAC1wt", "HDAC1KO HDAC1Mut")
+  mat <- mat[,col.order]
+
+  ann_colors = list(MS275 = c(up = "lightsalmon", down = "aquamarine"),
+                    JQ12 = c(up = "lightsalmon", down = "aquamarine"))
+  
+  pheatmap(mat, breaks = colramp, cluster_col = FALSE, cluster_row = clustered, #set treeheight_row = 0 to mask
+           fontsize_col = 15, angle_col = 90, main = title, display_numbers = numbers,
+           cellheight = 12, gaps_col = 1, clustering_method = "complete",
+           cellwidth = 50, legend = FALSE, fontsize = 10, fontsize_row = 10, 
+           annotation_row = inh_lab, annotation_colors = ann_colors, filename = out_file)
+  
+  return(betas_sig)
+}
+```
+
+```{r variables}
+#vector to collect the output results list names. Used for iteration over it and save the created lists as excel tables below.
+out_lists <- vector()
+```
+
+* Read raw count matrix and coldata
+  + Raw count matrix is provided by Michael Schuster of CEMM. 
+  + nome: Homo sapiens genome assembly hg38 (December 2013)
+  + Transcriptome: Homo sapiens transcriptome hg38_e100 (April 2020)
+  + STAR aligner was used for mapping of reads.
+  + The same RAW count numbers which where used in Schuster´s DEseq analysis are being read in here
+  + Coldata: Additional information about each sample. they are stored in the Metadata slot of the DEseq object
+
+```{r countmatrix}
+cts_full <- read_tsv("rnaseq_deseq_global_counts_raw.tsv")
+cts <- cts_full %>% select(gene_id, contains(c("HAP_1_", "HAP_2_", "HAP_3_", "HD1"))) %>% column_to_rownames("gene_id")
+cts_matrix <- as.matrix(cts)
+
+coldata <- read.csv("rnaseq_deseq_inhibitor_samples.tsv", sep="\t", row.names=12, colClasses=c("NULL","NULL", "NULL", NA, NA, "NULL", NA, NA, NA, NA, "NULL", NA, "NULL", NA), stringsAsFactors = TRUE)
+
+
+featureData <- cts_full %>% select(gene_version:location)
+
+```
+
+* Difference between sample metadata and count matrix samples?
+  + The sample data table has to contain exactly the same samples in the same order as the count matrix table, where we chose already the samples of interest. If there is a difference, drop the following unused sample data.
+```{r difference, echo=TRUE}
+ctsc <- colnames(cts_matrix)
+coldatac <- rownames(coldata)
+setdiff(coldatac, ctsc)
+
+coldata <- coldata[!(row.names(coldata) %in% setdiff(rownames(coldata),ctsc)), ]
+```
+
+* Do the sample data table and the count matrix now contain the same samples in the same order?
+```{r sample_check, echo=TRUE}
+(all(rownames(coldata) == colnames(cts)))
+```
+
+* Levels of Factors should of course also be adjusted to our "sub-matrix"
+
+```{r correct_factors}
+coldata$genotype <- factor(coldata$genotype, levels = c("wt", "HDAC1ko"))
+coldata$expression <- factor(coldata$expression, levels = c("native", "aHDAC1", "iHDAC1"))
+coldata$group <- factor(coldata$group, levels = c("wt_native", "HDAC1ko_native", "HDAC1ko_inactive", "HDAC1ko_active"))
+```
+
+* Create dds object + add metadata
+
+```{r dds_object_initialization}
+dds <- DESeqDataSetFromMatrix(countData = cts_matrix,
+                              colData = coldata,
+                              design = ~ group)
+
+mcols(dds) <- DataFrame(mcols(dds), featureData)
+```
+
+* relevel factors to set the reference
+
+```{r relevel_group_factor}
+dds$group <- factor(dds$group, levels = c("wt_native", "HDAC1ko_active", "HDAC1ko_inactive", "HDAC1ko_native"))
+```
+
+* Pre-filter the low raw count rows
+  + Here we can define the threshold for the sum of raw counts per row, so that rows (=genes) with a generally low count can be dropped. This threshold can also depend on the number of samples!
+
+```{r cutoff, echo=TRUE}
+keep <- rowSums(counts(dds)) > 1
+dds <- dds[keep,]
+```
+
+* Deseq with WALD
+
+```{r deseq_lrt}
+if (platform == "Linux") {
+  dds <- DESeq(dds, test="LRT", reduced=~1, parallel=TRUE)
+} else {
+  dds <- DESeq(dds, test="LRT", reduced=~1)
+}
+
+KO_vs_ctrl_all <- results(dds)
+```
+
+* Quality control
+```{r quality_check}
+summary(KO_vs_ctrl_all)
+options(scipen = 5)
+
+plotMA(KO_vs_ctrl_all, ylim = c(-10,10), main = "group HDAC1 KO vs wt native \n rowsum > 1")
+
+options(scipen = 0)
+```
+
+## Adding gene names/Types and chose significant genes for Heatmaps
+For this task additional result tables are being generated. So I can chose the genes which fulfill the conditions.
+
+* add gene names to main gene set with log2foldChanges of KO relative to ctrl
+```{r main_set_names}
+KO_vs_ctrl_all$gene_name <- mcols(dds)$gene_name
+KO_vs_ctrl_all$gene_biotype <- mcols(dds)$gene_biotype
+out_lists <- c(out_lists, "KO_vs_ctrl_all")
+```
+
+* Choose significant genes from main gene set and subset into upregulated, downregulated and unchanged genes (KO relative to ctrl)
+```{r significants}
+KO_vs_ctrl <- subset(KO_vs_ctrl_all, padj < 0.1)
+out_lists <- c(out_lists, "KO_vs_ctrl")
+
+KO_vs_ctrl_up <- subset(KO_vs_ctrl_all, log2FoldChange > 1 & padj < 0.1)
+KO_vs_ctrl_up <- KO_vs_ctrl_up[order(KO_vs_ctrl_up$log2FoldChange, decreasing = TRUE),]
+out_lists <- c(out_lists, "KO_vs_ctrl_up")
+
+KO_vs_ctrl_down <- subset(KO_vs_ctrl_all, log2FoldChange < -1 & padj < 0.1)
+KO_vs_ctrl_down <- KO_vs_ctrl_down[order(KO_vs_ctrl_down$log2FoldChange, decreasing = FALSE),]
+out_lists <- c(out_lists, "KO_vs_ctrl_down")
+
+KO_vs_ctrl_unch <- subset(KO_vs_ctrl_all, log2FoldChange > -1 & log2FoldChange < 1 & padj < 0.1)
+KO_vs_ctrl_unch <- KO_vs_ctrl_unch[order(KO_vs_ctrl_unch$log2FoldChange, decreasing = TRUE),]
+out_lists <- c(out_lists, "KO_vs_ctrl_unch")
+
+KO_vs_ctrl_unchup <- subset(KO_vs_ctrl_all, log2FoldChange > -1 & padj < 0.1)
+KO_vs_ctrl_unchup <- KO_vs_ctrl_unchup[order(KO_vs_ctrl_unchup$log2FoldChange, decreasing = TRUE),]
+out_lists <- c(out_lists, "KO_vs_ctrl_unchup")
+
+KO_vs_ctrl_unchdown <- subset(KO_vs_ctrl_all, log2FoldChange < 1 & padj < 0.1)
+KO_vs_ctrl_unchdown <- KO_vs_ctrl_unchdown[order(KO_vs_ctrl_unchdown$log2FoldChange, decreasing = FALSE),]
+out_lists <- c(out_lists, "KO_vs_ctrl_unchdown")
+```
+
+* wt reintroduction in KO, if genes are upregulated in KO
+Sort the genes which are upregulated by reintroduction of wt HDAC1 into a downregulated set and an upregulated set. therefore the log2foldChanges have to be read by extracting the corresponding contrast from the dds object. Gene names have to be added first to the results table, before it is made smaller.
+```{r active_reintro_KO_up}
+KOca_vs_KO_all <- results(dds, contrast = c("group", "HDAC1ko_active", "HDAC1ko_native"))
+KOca_vs_KO_all$gene_name <- mcols(dds)$gene_name
+KOca_vs_KO_all$gene_biotype <- mcols(dds)$gene_biotype
+out_lists <- c(out_lists, "KOca_vs_KO_all")
+
+KOca_vs_KO_up <- subset(KOca_vs_KO_all, log2FoldChange > 1 & padj < 0.1)
+out_lists <- c(out_lists, "KOca_vs_KO_up")
+KO_up_KOca_up_vs_ctrl <- 
+  KO_vs_ctrl_up[!(rownames(KO_vs_ctrl_up) %in% setdiff(rownames(KO_vs_ctrl_up),rownames(KOca_vs_KO_up))), ]
+out_lists <- c(out_lists, "KO_up_KOca_up_vs_ctrl")
+
+KOca_vs_KO_down <- subset(KOca_vs_KO_all, log2FoldChange < -1 & padj < 0.1)
+out_lists <- c(out_lists, "KOca_vs_KO_down")
+KO_up_KOca_down_vs_ctrl <- 
+  KO_vs_ctrl_up[!(rownames(KO_vs_ctrl_up) %in% setdiff(rownames(KO_vs_ctrl_up),rownames(KOca_vs_KO_down))), ]
+out_lists <- c(out_lists, "KO_up_KOca_down_vs_ctrl")
+
+KOca_vs_KO_unch <- subset(KOca_vs_KO_all, log2FoldChange > -1 & log2FoldChange < 1 & padj < 0.1)
+out_lists <- c(out_lists, "KOca_vs_KO_unch")
+```
+
+* wt reintroduction in KO, if genes are downregulated in KO
+Same as above, but this time for the genes which are downregulated in KO. The gene sets, which describe the upregulated or downregulated genes upon wt HDAC1 reintroduction were defined in the previous section.
+```{r active_reintro_KO_down}
+KO_down_KOca_up_vs_ctrl <- 
+  KO_vs_ctrl_down[!(rownames(KO_vs_ctrl_down) %in% setdiff(rownames(KO_vs_ctrl_down),rownames(KOca_vs_KO_up))), ]
+out_lists <- c(out_lists, "KO_down_KOca_up_vs_ctrl")
+
+KO_down_KOca_down_vs_ctrl <- 
+  KO_vs_ctrl_down[!(rownames(KO_vs_ctrl_down) %in% setdiff(rownames(KO_vs_ctrl_down),rownames(KOca_vs_KO_down))), ]
+out_lists <- c(out_lists, "KO_down_KOca_down_vs_ctrl")
+```
+
+
+* wt reintroduction in KO, if genes are unchanged in KO
+This if for the genes which are not affected by the KO, but are regulated by the reintroduction of the wt HDAC1
+```{r active_reintro_KO_unch}
+KO_unch_KOca_up_vs_ctrl <- 
+  KO_vs_ctrl_unch[!(rownames(KO_vs_ctrl_unch) %in% setdiff(rownames(KO_vs_ctrl_unch),rownames(KOca_vs_KO_up))), ]
+out_lists <- c(out_lists, "KO_unch_KOca_up_vs_ctrl")
+
+KO_unch_KOca_down_vs_ctrl <- 
+  KO_vs_ctrl_unch[!(rownames(KO_vs_ctrl_unch) %in% setdiff(rownames(KO_vs_ctrl_unch),rownames(KOca_vs_KO_down))), ]
+out_lists <- c(out_lists, "KO_unch_KOca_down_vs_ctrl")
+
+KO_unch_KOca_unch_vs_ctrl <-
+  KO_vs_ctrl_unch[!(rownames(KO_vs_ctrl_unch) %in% setdiff(rownames(KO_vs_ctrl_unch),rownames(KOca_vs_KO_unch))), ]
+out_lists <- c(out_lists, "KO_unch_KOca_unch_vs_ctrl")
+```
+
+
+* Reintroduction of the catalytically inactive HDAC1 Mutant
+Since the genes from the KO and the wt reintroduction are chosen now, we can group and select the genes we want to display from the ci gene set. therefore, we need to first know the log2foldChanges from this genes relative to the KO. Contrast is extracted again.
+```{r inactive_reintro}
+KOci_vs_KO_all <- results(dds, contrast = c("group", "HDAC1ko_inactive", "HDAC1ko_native"))
+KOci_vs_KO_all$gene_name <- mcols(dds)$gene_name
+KOci_vs_KO_all$gene_biotype <- mcols(dds)$gene_biotype
+out_lists <- c(out_lists, "KOci_vs_KO_all")
+
+KOci_vs_KO_down <- subset(KOci_vs_KO_all, log2FoldChange < -1 & padj < 0.1)
+out_lists <- c(out_lists, "KOci_vs_KO_down")
+
+KOci_vs_KO_up <- subset(KOci_vs_KO_all, log2FoldChange > 1 & padj < 0.1)
+out_lists <- c(out_lists, "KOci_vs_KO_up")
+
+KOci_vs_KO_unch <- subset(KOci_vs_KO_all, log2FoldChange > -1 & log2FoldChange < 1 & padj < 0.1)
+out_lists <- c(out_lists, "KOci_vs_KO_unch")
+```
+
+* Grouping can be started:
+
+  + i) When both active and inactive HDAC1 do the same.
+```{r i_same}
+KO_up_KOca_down_KOci_down_vs_ctrl <- KO_up_KOca_down_vs_ctrl[!(rownames(KO_up_KOca_down_vs_ctrl) %in%
+                               setdiff(rownames(KO_up_KOca_down_vs_ctrl),rownames(KOci_vs_KO_down))), ]
+out_lists <- c(out_lists, "KO_up_KOca_down_KOci_down_vs_ctrl")
+
+KO_down_KOca_up_KOci_up_vs_ctrl <- KO_down_KOca_up_vs_ctrl[!(rownames(KO_down_KOca_up_vs_ctrl) %in%
+                               setdiff(rownames(KO_down_KOca_up_vs_ctrl),rownames(KOci_vs_KO_up))), ]
+out_lists <- c(out_lists, "KO_down_KOca_up_KOci_up_vs_ctrl")
+```
+
+  + ii) When the catalytically inactive HDAC1 doesn't affect gene regulation
+```{r ii_no_change}
+KO_up_KOca_down_KOci_unch_vs_ctrl <- KO_up_KOca_down_vs_ctrl[!(rownames(KO_up_KOca_down_vs_ctrl) %in%
+                               setdiff(rownames(KO_up_KOca_down_vs_ctrl),rownames(KOci_vs_KO_unch))), ]
+out_lists <- c(out_lists, "KO_up_KOca_down_KOci_unch_vs_ctrl")
+
+KO_down_KOca_up_KOci_unch_vs_ctrl <- KO_down_KOca_up_vs_ctrl[!(rownames(KO_down_KOca_up_vs_ctrl) %in%
+                               setdiff(rownames(KO_down_KOca_up_vs_ctrl),rownames(KOci_vs_KO_unch))), ]
+out_lists <- c(out_lists, "KO_down_KOca_up_KOci_unch_vs_ctrl")
+```
+
+  + iii) dominant negative effect upon reintroduction of the catalytically inactive HDAC1
+```{r iii_negative_dominant}
+KO_up_KOca_down_KOci_up_vs_ctrl <- KO_up_KOca_down_vs_ctrl[!(rownames(KO_up_KOca_down_vs_ctrl) %in%
+                               setdiff(rownames(KO_up_KOca_down_vs_ctrl),rownames(KOci_vs_KO_up))), ]
+out_lists <- c(out_lists, "KO_up_KOca_down_KOci_up_vs_ctrl")
+
+KO_down_KOca_up_KOci_down_vs_ctrl <- KO_down_KOca_up_vs_ctrl[!(rownames(KO_down_KOca_up_vs_ctrl) %in%
+                               setdiff(rownames(KO_down_KOca_up_vs_ctrl),rownames(KOci_vs_KO_down))), ]
+out_lists <- c(out_lists, "KO_down_KOca_up_KOci_down_vs_ctrl")
+```
+
+  + iiiB) dominant negative effect if unchanged or already deregulated in KO
+```{r iii_negative_dominant_unchupdown}
+KO_unchup_KOci_up_vs_KO <- KOci_vs_KO_up[!(rownames(KOci_vs_KO_up) %in%
+                               setdiff(rownames(KOci_vs_KO_up),rownames(KO_vs_ctrl_unchup))), ]
+out_lists <- c(out_lists, "KO_unchup_KOci_up_vs_KO")
+
+KO_unchdown_KOci_down_vs_KO <- KOci_vs_KO_down[!(rownames(KOci_vs_KO_down) %in%
+                               setdiff(rownames(KOci_vs_KO_down),rownames(KO_vs_ctrl_unchdown))), ]
+out_lists <- c(out_lists, "KO_unchdown_KOci_down_vs_KO")
+```
+
+  + iii) Additional to iii, but if unchanged in KO and active reintro
+```{r iii_unch_in_KO_and_ca}
+KO_unch_KOca_unch_KOci_up_vs_ctrl <- KO_unch_KOca_unch_vs_ctrl[!(rownames(KO_unch_KOca_unch_vs_ctrl) %in%
+                               setdiff(rownames(KO_unch_KOca_unch_vs_ctrl),rownames(KOci_vs_KO_up))), ]
+out_lists <- c(out_lists, "KO_unch_KOca_unch_KOci_up_vs_ctrl")
+
+KO_unch_KOca_unch_KOci_down_vs_ctrl <- KO_unch_KOca_unch_vs_ctrl[!(rownames(KO_unch_KOca_unch_vs_ctrl) %in%
+                               setdiff(rownames(KO_unch_KOca_unch_vs_ctrl),rownames(KOci_vs_KO_down))), ]
+out_lists <- c(out_lists, "KO_unch_KOca_unch_KOci_down_vs_ctrl")
+```
+
+
+  + iv) What if HDAC1 KO doesn't affect the gene, but introduction of the catalytically inactive HDAC1 causes deregulation?
+```{r iv_change_only_upon_ci_intro}
+KO_unch_KOci_up_vs_ctrl <- KO_vs_ctrl_unch[!(rownames(KO_vs_ctrl_unch) %in%
+                                setdiff(rownames(KO_vs_ctrl_unch),rownames(KOci_vs_KO_up))), ]
+out_lists <- c(out_lists, "KO_unch_KOci_up_vs_ctrl")
+
+KO_unch_KOci_down_vs_ctrl <- KO_vs_ctrl_unch[!(rownames(KO_vs_ctrl_unch) %in%
+                                setdiff(rownames(KO_vs_ctrl_unch),rownames(KOci_vs_KO_down))), ]
+out_lists <- c(out_lists, "KO_unch_KOci_down_vs_ctrl")
+```
+
+* Save all created lists additionally as Excel Sheets and count gene numbers & calculate ratios.
+```{r create_lists}
+out_lists2 = out_lists
+comparison = vector()
+ratio = vector()
+out_lists_counts = vector()
+
+for (listname in out_lists) {
+  write_xlsx(rownames_to_column(as.data.frame(get(listname)), "gene_id"),
+           path = paste0("20210328_LRT_HDACko_HDACreintroduction_e100_report/HDAC1_", listname, ".xlsx"))
+}
+
+#count and calculate ratios of gene numbers between all lists
+for (listname1 in out_lists) {
+  for (listname2 in out_lists2) {
+    comparison = c(comparison, paste0(listname1, "_from_", listname2))
+    
+    list1 = get(listname1) #This is unecessary, should be moved one layer above
+    count1 = length(list1$gene_name)
+    list2 = get(listname2)
+    count2 = length(list2$gene_name)
+    
+    current_ratio = count1/count2*100
+    ratio = c(ratio, current_ratio)
+  }
+  out_lists_counts = c(out_lists_counts, count1) #This was added to see the gene numbers in the lists
+}
+
+all_ratios = data.frame(comparison, ratio)
+usefull_ratios = all_ratios[all_ratios$ratio <= 100, ]
+write_xlsx(usefull_ratios, path = paste0("20210328_LRT_HDACko_HDACreintroduction_e100_report/HDAC1_ratios.xlsx"))
+all_ratios = column_to_rownames(all_ratios, "comparison")
+
+gene_numbers = data.frame(out_lists, out_lists_counts)
+write_xlsx(gene_numbers, path = paste0("20210328_LRT_HDACko_HDACreintroduction_e100_report/HDAC1_GeneCounts.xlsx"))
+gene_numbers = column_to_rownames(gene_numbers, "out_lists")
+```
+
+
+
+
+# Gene counts (general numbers and ratios)
+
+The significant genes were chosen according to whether they experience deregulation in either KO, catalytically active reintroduction in KO or inactive Mutant reintroduction in KO.
+```{r general_numbers_1}
+print(paste0("Total gene number used as Input for DEseq: ", gene_numbers["KO_vs_ctrl_all",]))
+print(paste0("Significant genes (Deregulated in either KO, KO_ca or KO_ci): ", gene_numbers["KO_vs_ctrl",]))
+```
+
+For iiiB), the genes which are  not or only minimally deregulated (log2Foldchange between -1 & 1 in KO compared to ctrl) are taken together with either the upregulated or downregulated genes in KO. Then these genes are sorted according to their deregulation in KO_ci_reintro (up/down) if they worsen the deregulation of the genes into the same direction as in the KO.
+```{r general_numbers_2}
+print(paste0("Total unchanged or upregulated genes: ", gene_numbers["KO_vs_ctrl_unchup",]))
+print(paste0("Total unchanged or downregulated genes: ", gene_numbers["KO_vs_ctrl_unchdown",]))
+```
+
+
+
+
+# Heatmaps KO vs ctrl and intro ca/ci vs KO
+Get the FoldChange Estimates from dds object and collapse it to have only significant genes in the list.
+Since the object betas has the gene ids as Attribute, change them to gene names in order to see the names in the Heatmap. Create Heatmaps according to the grouping above
+
+
+
+## i) Active and inactive HDAC1 do the same
+### complete Heatmap
+```{r gene_heatmap_same_up, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap(KO_up_KOca_down_KOci_down_vs_ctrl, 10000, "active and inactive HDAC1 \n do the same",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_same.pdf")
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_same.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_same.pdf")
+message("genes: ", length(rownames(res_table)))
+message("Total upregulated in KO: ", gene_numbers["KO_vs_ctrl_up",])
+message("percentage from upregulated genes in KO: ", all_ratios["KO_up_KOca_down_KOci_down_vs_ctrl_from_KO_vs_ctrl_up",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_same.xlsx)
+
+```{r gene_heatmap_same_down, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap(KO_down_KOca_up_KOci_up_vs_ctrl, 10000, "active and inactive HDAC1 \n do the same",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_same.pdf", sort_decr = FALSE)
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_same.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_same.pdf")
+message("genes: ", length(rownames(res_table)))
+message("Total downregulated in KO: ", gene_numbers["KO_vs_ctrl_down",])
+message("percentage from downregulated genes in KO: ", all_ratios["KO_down_KOca_up_KOci_up_vs_ctrl_from_KO_vs_ctrl_down",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_same.xlsx)
+
+### Top30 with numbers
+```{r gene_heatmap_same_up30n, out.width = "50%"}
+res_table <- create_heatmap(KO_up_KOca_down_KOci_down_vs_ctrl, 30, "active and inactive HDAC1 \n do the same",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_same30n.png", numbers = TRUE,
+               clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_same30n.png")
+message("genes: ", length(rownames(res_table)))
+message("Total upregulated in KO: ", gene_numbers["KO_vs_ctrl_up",])
+message("percentage from upregulated genes in KO: ", all_ratios["KO_up_KOca_down_KOci_down_vs_ctrl_from_KO_vs_ctrl_up",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_same.xlsx)
+
+```{r gene_heatmap_same_down30n, out.width = "50%"}
+res_table <- create_heatmap(KO_down_KOca_up_KOci_up_vs_ctrl, 30, "active and inactive HDAC1 \n do the same",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_same30n.png", numbers = TRUE,
+               clustered = FALSE, sort_decr = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_same30n.png")
+message("genes: ", length(rownames(res_table)))
+message("Total downregulated in KO: ", gene_numbers["KO_vs_ctrl_down",])
+message("percentage from downregulated genes in KO: ", all_ratios["KO_down_KOca_up_KOci_up_vs_ctrl_from_KO_vs_ctrl_down",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_same.xlsx)
+
+### Top30 clustered
+```{r gene_heatmap_same_up30, out.width = "50%"}
+res_table <- create_heatmap(KO_up_KOca_down_KOci_down_vs_ctrl, 30, "active and inactive HDAC1 \n do the same",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_same30.png")
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_same30.png")
+message("genes: ", length(rownames(res_table)))
+message("Total upregulated in KO: ", gene_numbers["KO_vs_ctrl_up",])
+message("percentage from upregulated genes in KO: ", all_ratios["KO_up_KOca_down_KOci_down_vs_ctrl_from_KO_vs_ctrl_up",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_same.xlsx)
+
+```{r gene_heatmap_same_down30, out.width = "50%"}
+res_table <- create_heatmap(KO_down_KOca_up_KOci_up_vs_ctrl, 30, "active and inactive HDAC1 \n do the same",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_same30.png", sort_decr = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_same30.png")
+message("genes: ", length(rownames(res_table)))
+message("Total downregulated in KO: ", gene_numbers["KO_vs_ctrl_down",])
+message("percentage from downregulated genes in KO: ", all_ratios["KO_down_KOca_up_KOci_up_vs_ctrl_from_KO_vs_ctrl_down",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_same.xlsx)
+
+### Top30 ranked
+```{r gene_heatmap_same_up30rank, out.width = "50%"}
+res_table <- create_heatmap(KO_up_KOca_down_KOci_down_vs_ctrl, 30, "active and inactive HDAC1 \n do the same",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_same30rank.png", clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_same30rank.png")
+message("genes: ", length(rownames(res_table)))
+message("Total upregulated in KO: ", gene_numbers["KO_vs_ctrl_up",])
+message("percentage from upregulated genes in KO: ", all_ratios["KO_up_KOca_down_KOci_down_vs_ctrl_from_KO_vs_ctrl_up",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_same.xlsx)
+
+```{r gene_heatmap_same_down30rank, out.width = "50%"}
+res_table <- create_heatmap(KO_down_KOca_up_KOci_up_vs_ctrl, 30, "active and inactive HDAC1 \n do the same",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_same30rank.png", sort_decr = FALSE,
+               clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_same30rank.png")
+message("genes: ", length(rownames(res_table)))
+message("Total downregulated in KO: ", gene_numbers["KO_vs_ctrl_down",])
+message("percentage from downregulated genes in KO: ", all_ratios["KO_down_KOca_up_KOci_up_vs_ctrl_from_KO_vs_ctrl_down",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_same.xlsx)
+
+
+
+
+
+
+
+## ii) Catalytically inactive HDAC1 doesn't affect gene regulation
+### complete Heatmap
+```{r gene_heatmap_unch_up, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap(KO_up_KOca_down_KOci_unch_vs_ctrl, 10000,
+                            "catalytically inactive \n HDAC1 doesn't affect \n gene regulation",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_unch.pdf")
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_unch.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_unch.pdf")
+message("genes: ", length(rownames(res_table)))
+message("Total upregulated in KO: ", gene_numbers["KO_vs_ctrl_up",])
+message("percentage from upregulated genes in KO: ", all_ratios["KO_up_KOca_down_KOci_unch_vs_ctrl_from_KO_vs_ctrl_up",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_unch.xlsx)
+
+```{r gene_heatmap_unch_down, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap(KO_down_KOca_up_KOci_unch_vs_ctrl, 10000,
+                            "catalytically inactive \n HDAC1 doesn't affect \n gene regulation",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_unch.pdf", sort_decr = FALSE)
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_unch.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_unch.pdf")
+message("genes: ", length(rownames(res_table)))
+message("Total downregulated in KO: ", gene_numbers["KO_vs_ctrl_down",])
+message("percentage from downregulated genes in KO: ", all_ratios["KO_down_KOca_up_KOci_unch_vs_ctrl_from_KO_vs_ctrl_down",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_unch.xlsx)
+
+### Top30 with numbers
+```{r gene_heatmap_unch_up30n, out.width = "50%"}
+res_table <- create_heatmap(KO_up_KOca_down_KOci_unch_vs_ctrl, 30,
+                            "catalytically inactive \n HDAC1 doesn't affect \n gene regulation",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_unch30n.png", numbers = TRUE,
+               clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_unch30n.png")
+message("genes: ", length(rownames(res_table)))
+message("Total upregulated in KO: ", gene_numbers["KO_vs_ctrl_up",])
+message("percentage from upregulated genes in KO: ", all_ratios["KO_up_KOca_down_KOci_unch_vs_ctrl_from_KO_vs_ctrl_up",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_unch.xlsx)
+
+```{r gene_heatmap_unch_down30n, out.width = "50%"}
+res_table <- create_heatmap(KO_down_KOca_up_KOci_unch_vs_ctrl, 30,
+                            "catalytically inactive \n HDAC1 doesn't affect \n gene regulation",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_unch30n.png", numbers = TRUE,
+               clustered = FALSE, sort_decr = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_unch30n.png")
+message("genes: ", length(rownames(res_table)))
+message("Total downregulated in KO: ", gene_numbers["KO_vs_ctrl_down",])
+message("percentage from downregulated genes in KO: ", all_ratios["KO_down_KOca_up_KOci_unch_vs_ctrl_from_KO_vs_ctrl_down",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_unch.xlsx)
+
+### Top30 clustered
+```{r gene_heatmap_unch_up30, out.width = "50%"}
+res_table <- create_heatmap(KO_up_KOca_down_KOci_unch_vs_ctrl, 30,
+                            "catalytically inactive \n HDAC1 doesn't affect \n gene regulation",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_unch30.png")
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_unch30.png")
+message("genes: ", length(rownames(res_table)))
+message("Total upregulated in KO: ", gene_numbers["KO_vs_ctrl_up",])
+message("percentage from upregulated genes in KO: ", all_ratios["KO_up_KOca_down_KOci_unch_vs_ctrl_from_KO_vs_ctrl_up",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_unch.xlsx)
+
+```{r gene_heatmap_unch_down30, out.width = "50%"}
+res_table <- create_heatmap(KO_down_KOca_up_KOci_unch_vs_ctrl, 30,
+                            "catalytically inactive \n HDAC1 doesn't affect \n gene regulation",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_unch30.png", sort_decr = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_unch30.png")
+message("genes: ", length(rownames(res_table)))
+message("Total downregulated in KO: ", gene_numbers["KO_vs_ctrl_down",])
+message("percentage from downregulated genes in KO: ", all_ratios["KO_down_KOca_up_KOci_unch_vs_ctrl_from_KO_vs_ctrl_down",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_unch.xlsx)
+
+### Top30 ranked
+```{r gene_heatmap_unch_up30rank, out.width = "50%"}
+res_table <- create_heatmap(KO_up_KOca_down_KOci_unch_vs_ctrl, 30,
+                            "catalytically inactive \n HDAC1 doesn't affect \n gene regulation",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_unch30rank.png", clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_unch30rank.png")
+message("genes: ", length(rownames(res_table)))
+message("Total upregulated in KO: ", gene_numbers["KO_vs_ctrl_up",])
+message("percentage from upregulated genes in KO: ", all_ratios["KO_up_KOca_down_KOci_unch_vs_ctrl_from_KO_vs_ctrl_up",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_unch.xlsx)
+
+```{r gene_heatmap_unch_down30rank, out.width = "50%"}
+res_table <- create_heatmap(KO_down_KOca_up_KOci_unch_vs_ctrl, 30,
+                            "catalytically inactive \n HDAC1 doesn't affect \n gene regulation",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_unch30rank.png", sort_decr = FALSE,
+               clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_unch30rank.png")
+message("genes: ", length(rownames(res_table)))
+message("Total downregulated in KO: ", gene_numbers["KO_vs_ctrl_down",])
+message("percentage from downregulated genes in KO: ", all_ratios["KO_down_KOca_up_KOci_unch_vs_ctrl_from_KO_vs_ctrl_down",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_unch.xlsx)
+
+
+
+
+
+
+## iiiA) dominant negative effect (rescue by wt, stronger deregulation by ci)
+### complete Heatmap
+```{r gene_heatmap_domneg_up, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap(KO_up_KOca_down_KOci_up_vs_ctrl, 10000, "dominant negative effect",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative.pdf")
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative.pdf")
+message("genes: ", length(rownames(res_table)))
+message("Total upregulated in KO: ", gene_numbers["KO_vs_ctrl_up",])
+message("percentage from upregulated genes in KO: ", all_ratios["KO_up_KOca_down_KOci_up_vs_ctrl_from_KO_vs_ctrl_up",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative.xlsx)
+
+```{r gene_heatmap_domneg_down, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap(KO_down_KOca_up_KOci_down_vs_ctrl, 10000, "dominant negative effect",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative.pdf", sort_decr = FALSE)
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative.pdf")
+message("genes: ", length(rownames(res_table)))
+message("Total downregulated in KO: ", gene_numbers["KO_vs_ctrl_down",])
+message("percentage from downregulated genes in KO: ", all_ratios["KO_down_KOca_up_KOci_down_vs_ctrl_from_KO_vs_ctrl_down",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative.xlsx)
+
+### Top30 with numbers
+```{r gene_heatmap_domneg_up30n, out.width = "50%"}
+res_table <- create_heatmap(KO_up_KOca_down_KOci_up_vs_ctrl, 30, "dominant negative effect",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative30n.png", numbers = TRUE,
+               clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative30n.png")
+message("genes: ", length(rownames(res_table)))
+message("Total upregulated in KO: ", gene_numbers["KO_vs_ctrl_up",])
+message("percentage from upregulated genes in KO: ", all_ratios["KO_up_KOca_down_KOci_up_vs_ctrl_from_KO_vs_ctrl_up",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative.xlsx)
+
+```{r gene_heatmap_domneg_down30n, out.width = "50%"}
+res_table <- create_heatmap(KO_down_KOca_up_KOci_down_vs_ctrl, 30, "dominant negative effect",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative30n.png", numbers = TRUE,
+               clustered = FALSE, sort_decr = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative30n.png")
+message("genes: ", length(rownames(res_table)))
+message("Total downregulated in KO: ", gene_numbers["KO_vs_ctrl_down",])
+message("percentage from downregulated genes in KO: ", all_ratios["KO_down_KOca_up_KOci_down_vs_ctrl_from_KO_vs_ctrl_down",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative.xlsx)
+
+### Top30 clustered
+```{r gene_heatmap_domneg_up30, out.width = "50%"}
+res_table <- create_heatmap(KO_up_KOca_down_KOci_up_vs_ctrl, 30, "dominant negative effect",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative30.png")
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative30.png")
+message("genes: ", length(rownames(res_table)))
+message("Total upregulated in KO: ", gene_numbers["KO_vs_ctrl_up",])
+message("percentage from upregulated genes in KO: ", all_ratios["KO_up_KOca_down_KOci_up_vs_ctrl_from_KO_vs_ctrl_up",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative.xlsx)
+
+```{r gene_heatmap_domneg_down30, out.width = "50%"}
+res_table <- create_heatmap(KO_down_KOca_up_KOci_down_vs_ctrl, 30, "dominant negative effect",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative30.png",
+               sort_decr = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative30.png")
+message("genes: ", length(rownames(res_table)))
+message("Total downregulated in KO: ", gene_numbers["KO_vs_ctrl_down",])
+message("percentage from downregulated genes in KO: ", all_ratios["KO_down_KOca_up_KOci_down_vs_ctrl_from_KO_vs_ctrl_down",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative.xlsx)
+
+### Top30 ranked
+```{r gene_heatmap_domneg_up30rank, out.width = "50%"}
+res_table <- create_heatmap(KO_up_KOca_down_KOci_up_vs_ctrl, 30, "dominant negative effect",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative30rank.png",
+               clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative30rank.png")
+message("genes: ", length(rownames(res_table)))
+message("Total upregulated in KO: ", gene_numbers["KO_vs_ctrl_up",])
+message("percentage from upregulated genes in KO: ", all_ratios["KO_up_KOca_down_KOci_up_vs_ctrl_from_KO_vs_ctrl_up",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative.xlsx)
+
+```{r gene_heatmap_domneg_down30rank, out.width = "50%"}
+res_table <- create_heatmap(KO_down_KOca_up_KOci_down_vs_ctrl, 30, "dominant negative effect",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative30rank.png",
+               sort_decr = FALSE, clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative30rank.png")
+message("genes: ", length(rownames(res_table)))
+message("Total downregulated in KO: ", gene_numbers["KO_vs_ctrl_down",])
+message("percentage from downregulated genes in KO: ", all_ratios["KO_down_KOca_up_KOci_down_vs_ctrl_from_KO_vs_ctrl_down",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative.xlsx)
+
+
+
+
+## iiiB) Dominant negative effect (All genes that are unchanged or already deregulated in KO)
+### complete Heatmap
+```{r gene_heatmap_KOci_vs_KO__unchup, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap(KO_unchup_KOci_up_vs_KO, 10000, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchup_KOci_up_vs_KO.pdf")
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchup_KOci_up_vs_KO.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchup_KOci_up_vs_KO.pdf")
+message("genes: ", length(rownames(res_table)))
+message("Total unchanged or upregulated in KO: ", gene_numbers["KO_vs_ctrl_unchup",])
+message("percentage from unchanged or upregulated genes in KO: ", all_ratios["KO_unchup_KOci_up_vs_KO_from_KO_vs_ctrl_unchup",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchup_KOci_up_vs_KO.xlsx)
+
+```{r gene_heatmap_KOci_vs_KO__unchdown, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap(KO_unchdown_KOci_down_vs_KO, 10000, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchdown_KOci_down_vs_KO.pdf", sort_decr = FALSE)
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchdown_KOci_down_vs_KO.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchdown_KOci_down_vs_KO.pdf")
+message("genes: ", length(rownames(res_table)))
+message("Total unchanged or downregulated in KO: ", gene_numbers["KO_vs_ctrl_unchdown",])
+message("percentage from unchanged or downregulated genes in KO: ",
+        all_ratios["KO_unchdown_KOci_down_vs_KO_from_KO_vs_ctrl_unchdown",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchdown_KOci_down_vs_KO.xlsx)
+
+### Top30 with numbers
+```{r gene_heatmap_KOci_vs_KO__unchup30n, out.width = "50%"}
+res_table <- create_heatmap(KO_unchup_KOci_up_vs_KO, 30, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchup_KOci_up_vs_KO30n.png",
+               numbers = TRUE, clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchup_KOci_up_vs_KO30n.png")
+message("genes: ", length(rownames(res_table)))
+message("Total unchanged or upregulated in KO: ", gene_numbers["KO_vs_ctrl_unchup",])
+message("percentage from unchanged or upregulated genes in KO: ", all_ratios["KO_unchup_KOci_up_vs_KO_from_KO_vs_ctrl_unchup",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchup_KOci_up_vs_KO.xlsx)
+
+```{r gene_heatmap_KOci_vs_KO__unchdown30n, out.width = "50%"}
+res_table <- create_heatmap(KO_unchdown_KOci_down_vs_KO, 30, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchdown_KOci_down_vs_KO30n.png", sort_decr = FALSE, numbers = TRUE, clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchdown_KOci_down_vs_KO30n.png")
+message("genes: ", length(rownames(res_table)))
+message("Total unchanged or downregulated in KO: ", gene_numbers["KO_vs_ctrl_unchdown",])
+message("percentage from unchanged or downregulated genes in KO: ",
+        all_ratios["KO_unchdown_KOci_down_vs_KO_from_KO_vs_ctrl_unchdown",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchdown_KOci_down_vs_KO.xlsx)
+
+### Top30 clustered
+```{r gene_heatmap_KOci_vs_KO__unchup30, out.width = "50%"}
+res_table <- create_heatmap(KO_unchup_KOci_up_vs_KO, 30, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchup_KOci_up_vs_KO30.png")
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchup_KOci_up_vs_KO30.png")
+message("genes: ", length(rownames(res_table)))
+message("Total unchanged or upregulated in KO: ", gene_numbers["KO_vs_ctrl_unchup",])
+message("percentage from unchanged or upregulated genes in KO: ", all_ratios["KO_unchup_KOci_up_vs_KO_from_KO_vs_ctrl_unchup",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchup_KOci_up_vs_KO.xlsx)
+
+```{r gene_heatmap_KOci_vs_KO__unchdown30, out.width = "50%"}
+res_table <- create_heatmap(KO_unchdown_KOci_down_vs_KO, 30, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchdown_KOci_down_vs_KO30.png", sort_decr = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchdown_KOci_down_vs_KO30.png")
+message("genes: ", length(rownames(res_table)))
+message("Total unchanged or downregulated in KO: ", gene_numbers["KO_vs_ctrl_unchdown",])
+message("percentage from unchanged or downregulated genes in KO: ",
+        all_ratios["KO_unchdown_KOci_down_vs_KO_from_KO_vs_ctrl_unchdown",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchdown_KOci_down_vs_KO.xlsx)
+
+### Top30 ranked
+```{r gene_heatmap_KOci_vs_KO__unchup30rank, out.width = "50%"}
+res_table <- create_heatmap(KO_unchup_KOci_up_vs_KO, 30, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchup_KOci_up_vs_KO30rank.png", clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchup_KOci_up_vs_KO30rank.png")
+message("genes: ", length(rownames(res_table)))
+message("Total unchanged or upregulated in KO: ", gene_numbers["KO_vs_ctrl_unchup",])
+message("percentage from unchanged or upregulated genes in KO: ", all_ratios["KO_unchup_KOci_up_vs_KO_from_KO_vs_ctrl_unchup",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchup_KOci_up_vs_KO.xlsx)
+
+```{r gene_heatmap_KOci_vs_KO__unchdown30rank, out.width = "50%"}
+res_table <- create_heatmap(KO_unchdown_KOci_down_vs_KO, 30, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchdown_KOci_down_vs_KO30rank.png", sort_decr = FALSE, clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchdown_KOci_down_vs_KO30rank.png")
+message("genes: ", length(rownames(res_table)))
+message("Total unchanged or downregulated in KO: ", gene_numbers["KO_vs_ctrl_unchdown",])
+message("percentage from unchanged or downregulated genes in KO: ",
+        all_ratios["KO_unchdown_KOci_down_vs_KO_from_KO_vs_ctrl_unchdown",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KO_unchdown_KOci_down_vs_KO.xlsx)
+
+
+
+
+## iv) All genes that show deregulation by ci introduction
+### complete Heatmap
+```{r gene_heatmap_KOci_vs_KO_up, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap(KOci_vs_KO_up, 10000, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up.pdf")
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up.pdf")
+message("genes: ", length(rownames(res_table)))
+#message("Total upregulated in KO: ", gene_numbers["KO_vs_ctrl_up",])
+#message("percentage from upregulated genes in KO: ", all_ratios["KOci_vs_KO_up_from_KO_vs_ctrl_up",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up.xlsx)
+
+```{r gene_heatmap_KOci_vs_KO_down, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap(KOci_vs_KO_down, 10000, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down.pdf", sort_decr = FALSE)
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down.pdf")
+message("genes: ", length(rownames(res_table)))
+#message("Total downregulated in KO: ", gene_numbers["KO_vs_ctrl_down",])
+#message("percentage from downregulated genes in KO: ", all_ratios["KOci_vs_KO_down_from_KO_vs_ctrl_down",],"%")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down.xlsx)
+
+### Top30 with numbers
+```{r gene_heatmap_KOci_vs_KO_up30n, out.width = "50%"}
+res_table <- create_heatmap(KOci_vs_KO_up, 30, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up30n.png", numbers = TRUE,
+               clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up30n.png")
+message("genes: ", length(rownames(res_table)))
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up.xlsx)
+
+```{r gene_heatmap_KOci_vs_KO_down30n, out.width = "50%"}
+res_table <- create_heatmap(KOci_vs_KO_down, 30, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down30n.png", numbers = TRUE,
+               clustered = FALSE, sort_decr = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down30n.png")
+message("genes: ", length(rownames(res_table)))
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down.xlsx)
+
+### Top30 clustered
+```{r gene_heatmap_KOci_vs_KO_up30, out.width = "50%"}
+res_table <- create_heatmap(KOci_vs_KO_up, 30, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up30.png")
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up30.png")
+message("genes: ", length(rownames(res_table)))
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up.xlsx)
+
+```{r gene_heatmap_KOci_vs_KO_down30, out.width = "50%"}
+res_table <- create_heatmap(KOci_vs_KO_down, 30, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down30.png",
+               sort_decr = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down30.png")
+message("genes: ", length(rownames(res_table)))
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down.xlsx)
+
+### Top30 ranked
+```{r gene_heatmap_KOci_vs_KO_up30rank, out.width = "50%"}
+res_table <- create_heatmap(KOci_vs_KO_up, 30, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up30rank.png", clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up30rank.png")
+message("genes: ", length(rownames(res_table)))
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up.xlsx)
+
+```{r gene_heatmap_KOci_vs_KO_down30rank, out.width = "50%"}
+res_table <- create_heatmap(KOci_vs_KO_down, 30, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down30rank.png",
+               sort_decr = FALSE, clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down30rank.png")
+message("genes: ", length(rownames(res_table)))
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down.xlsx)
+
+### Top60 with numbers
+```{r gene_heatmap_KOci_vs_KO_up60n, out.width = "50%"}
+res_table <- create_heatmap(KOci_vs_KO_up, 60, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up60n.png", numbers = TRUE,
+               clustered = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up60n.png")
+message("genes: ", length(rownames(res_table)))
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up.xlsx)
+
+```{r gene_heatmap_KOci_vs_KO_down60n, out.width = "50%"}
+res_table <- create_heatmap(KOci_vs_KO_down, 60, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down60n.png", numbers = TRUE,
+               clustered = FALSE, sort_decr = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down60n.png")
+message("genes: ", length(rownames(res_table)))
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down.xlsx)
+
+### Top60 clustered
+```{r gene_heatmap_KOci_vs_KO_up60, out.width = "50%"}
+res_table <- create_heatmap(KOci_vs_KO_up, 60, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up60.png")
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up60.png")
+message("genes: ", length(rownames(res_table)))
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_up.xlsx)
+
+```{r gene_heatmap_KOci_vs_KO_down60, out.width = "50%"}
+res_table <- create_heatmap(KOci_vs_KO_down, 60, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down60.png",
+               sort_decr = FALSE)
+
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down60.png")
+message("genes: ", length(rownames(res_table)))
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated/HDAC1_KOci_vs_KO_down.xlsx)
+
+
+
+
+
+# Heatmaps KO and intro ca/ci with MS275 & JQ12
+* Reading Inhibitor treatment data and group into up/down (still experimental usage)
+MS275/JQ12 treatment 1µl 24h: Which genes are up-/downregulated upon treatment, compared to the ctrl. Read in as tibble and prepare dataframe which tells us whether upregulated or downregulated. another tested possibility is the grouping of the data into 2 distinct dataframes with only the upregulated or only the downregulated genes.
+* "group_wt_MS275_1uM_24h_vs_wt_native.csv" & "group_wt_JQ12_1uM_24h_vs_wt_native.csv" is from 20210318_inhibitor_all
+
+```{r inhibitor_data}
+tib_MS275 <- read_csv("20210328_LRT_HDACko_HDACreintroduction_e100_report/group_wt_MS275_1uM_24h_vs_wt_native.csv")
+tib_MS275_lab <- tib_MS275 %>% select(gene_name, log2FoldChange) %>%
+        mutate(MS275 = if_else(log2FoldChange > 1, "up", if_else(log2FoldChange < -1, "down", "NA"))) %>%
+        filter(MS275 != "NA") %>% select(c("gene_name", MS275)) #%>%column_to_rownames(var = "gene_name")
+MS275_lab <- as.data.frame(tib_MS275_lab)
+
+
+
+
+tib_JQ12 <- read_csv("20210328_LRT_HDACko_HDACreintroduction_e100_report/group_wt_JQ12_1uM_24h_vs_wt_native.csv")
+tib_JQ12_lab <- tib_JQ12 %>% select(gene_name, log2FoldChange) %>%
+        mutate(JQ12 = if_else(log2FoldChange > 1, "up", if_else(log2FoldChange < -1, "down", "NA"))) %>%
+        filter(JQ12 != "NA") %>% select(c("gene_name", JQ12)) #%>%column_to_rownames(var = "gene_name")
+JQ12_lab <- as.data.frame(tib_JQ12_lab)
+
+tib_inh_lab <- full_join(tib_JQ12_lab, tib_MS275_lab, by = "gene_name")
+inh_lab <- as.data.frame(column_to_rownames(tib_inh_lab, var = "gene_name"))
+```
+
+## i) Active and inactive HDAC1 do the same (with MS275 & JQ12)
+### complete Heatmap
+```{r gene_heatmap_same_up_inh, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap_inh(KO_up_KOca_down_KOci_down_vs_ctrl, 10000, "active and inactive HDAC1 \n do the same",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up_with_inh/downregulated_by_wt/HDAC1_KO_up_ci_same.pdf")
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up_with_inh/downregulated_by_wt/HDAC1_KO_up_ci_same.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up_with_inh/downregulated_by_wt/HDAC1_KO_up_ci_same.pdf")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up_with_inh/downregulated_by_wt/HDAC1_KO_up_ci_same.xlsx)
+
+```{r gene_heatmap_same_down_inh, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap_inh(KO_down_KOca_up_KOci_up_vs_ctrl, 10000, "active and inactive HDAC1 \n do the same",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down_with_inh/upregulated_by_wt/HDAC1_KO_down_ci_same.pdf", sort_decr = FALSE)
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down_with_inh/upregulated_by_wt/HDAC1_KO_down_ci_same.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down_with_inh/upregulated_by_wt/HDAC1_KO_down_ci_same.pdf")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down_with_inh/upregulated_by_wt/HDAC1_KO_down_ci_same.xlsx)
+
+
+## ii) Catalytically inactive HDAC1 doesn't affect gene regulation (with MS275 & JQ12)
+### complete Heatmap
+```{r gene_heatmap_unch_up_inh, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap_inh(KO_up_KOca_down_KOci_unch_vs_ctrl, 10000,
+                            "catalytically inactive \n HDAC1 doesn't affect \n gene regulation",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up_with_inh/downregulated_by_wt/HDAC1_KO_up_ci_unch.pdf")
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up_with_inh/downregulated_by_wt/HDAC1_KO_up_ci_unch.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up_with_inh/downregulated_by_wt/HDAC1_KO_up_ci_unch.pdf")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up_with_inh/downregulated_by_wt/HDAC1_KO_up_ci_unch.xlsx)
+
+```{r gene_heatmap_unch_down_inh, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap_inh(KO_down_KOca_up_KOci_unch_vs_ctrl, 10000,
+                            "catalytically inactive \n HDAC1 doesn't affect \n gene regulation",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down_with_inh/upregulated_by_wt/HDAC1_KO_down_ci_unch.pdf", sort_decr = FALSE)
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down_with_inh/upregulated_by_wt/HDAC1_KO_down_ci_unch.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down_with_inh/upregulated_by_wt/HDAC1_KO_down_ci_unch.pdf")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down_with_inh/upregulated_by_wt/HDAC1_KO_down_ci_unch.xlsx)
+
+
+## iiiA) dominant negative effect (rescue by wt, stronger deregulation by ci ) [with MS275 & JQ12]
+### complete Heatmap
+```{r gene_heatmap_domneg_up_inh, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap_inh(KO_up_KOca_down_KOci_up_vs_ctrl, 10000, "dominant negative effect",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up_with_inh/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative.pdf")
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up_with_inh/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up_with_inh/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative.pdf")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_up_with_inh/downregulated_by_wt/HDAC1_KO_up_ci_dominantNegative.xlsx)
+
+```{r gene_heatmap_domneg_down_inh, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap_inh(KO_down_KOca_up_KOci_down_vs_ctrl, 10000, "dominant negative effect",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down_with_inh/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative.pdf", sort_decr = FALSE)
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down_with_inh/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down_with_inh/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative.pdf")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/KO_down_with_inh/upregulated_by_wt/HDAC1_KO_down_ci_dominantNegative.xlsx)
+
+
+
+## iiiB) Dominant negative effect (All genes that are unchanged or already deregulated in KO)
+### complete Heatmap
+```{r gene_heatmap_KOci_vs_KO__unchup_inh, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap_inh(KO_unchup_KOci_up_vs_KO, 10000, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated_with_inh/HDAC1_KO_unchup_KOci_up_vs_KO.pdf")
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated_with_inh/HDAC1_KO_unchup_KOci_up_vs_KO.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated_with_inh/HDAC1_KO_unchup_KOci_up_vs_KO.pdf")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated_with_inh/HDAC1_KO_unchup_KOci_up_vs_KO.xlsx)
+
+```{r gene_heatmap_KOci_vs_KO__unchdown_inh, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap_inh(KO_unchdown_KOci_down_vs_KO, 10000, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated_with_inh/HDAC1_KO_unchdown_KOci_down_vs_KO.pdf", sort_decr = FALSE)
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated_with_inh/HDAC1_KO_unchdown_KOci_down_vs_KO.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated_with_inh/HDAC1_KO_unchdown_KOci_down_vs_KO.pdf")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated_with_inh/HDAC1_KO_unchdown_KOci_down_vs_KO.xlsx)
+
+## iv) All genes that show deregulation by ci introduction
+### complete Heatmap
+```{r gene_heatmap_KOci_vs_KO_up_inh, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap_inh(KOci_vs_KO_up, 10000, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated_with_inh/HDAC1_KOci_vs_KO_up.pdf")
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated_with_inh/HDAC1_KOci_vs_KO_up.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated_with_inh/HDAC1_KOci_vs_KO_up.pdf")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated_with_inh/HDAC1_KOci_vs_KO_up.xlsx)
+
+```{r gene_heatmap_KOci_vs_KO_down_inh, out.height = "600px", out.width = "100%"}
+res_table <- create_heatmap_inh(KOci_vs_KO_down, 10000, "Deregulation by ci intro",
+               "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated_with_inh/HDAC1_KOci_vs_KO_down.pdf", sort_decr = FALSE)
+write_xlsx(rownames_to_column(as.data.frame(res_table), "gene_name"),
+           path = "20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated_with_inh/HDAC1_KOci_vs_KO_down.xlsx")
+include_graphics("20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated_with_inh/HDAC1_KOci_vs_KO_down.pdf")
+```
+[download Excel Table](20210328_LRT_HDACko_HDACreintroduction_e100_report/ci_deregulated_with_inh/HDAC1_KOci_vs_KO_down.xlsx)
+
+
+
+# R status
+```{r}
+sessionInfo()
+```
